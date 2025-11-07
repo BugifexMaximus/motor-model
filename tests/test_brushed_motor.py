@@ -12,6 +12,7 @@ def test_zero_voltage_keeps_motor_idle():
     assert all(abs(i) < 1e-9 for i in result.current)
     assert all(abs(w) < 1e-9 for w in result.speed)
     assert all(abs(theta) < 1e-9 for theta in result.position)
+    assert all(abs(v) < 1e-9 for v in result.voltage)
     assert len(result.lvdt) == len(result.time)
     assert len(result.lvdt_time) == len(result.lvdt)
     assert all(abs(t_lvdt - t) < 1e-12 for t_lvdt, t in zip(result.lvdt_time, result.time))
@@ -35,6 +36,7 @@ def test_step_voltage_overcomes_friction_and_spins_up():
     assert max(result.current) > result.current[-1]
     # Position should have advanced significantly.
     assert result.position[-1] > 0.1
+    assert all(abs(v - 5.0) < 1e-12 for v in result.voltage)
 
 
 def test_lvdt_measurement_is_normalized_and_noiseless_when_requested():

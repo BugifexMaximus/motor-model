@@ -40,6 +40,7 @@ class SimulationResult:
     speed: List[float]
     position: List[float]
     torque: List[float]
+    voltage: List[float]
     lvdt_time: List[float]
     lvdt: List[float]
 
@@ -180,6 +181,7 @@ class BrushedMotorModel:
         speed_values: List[float] = []
         position_values: List[float] = []
         torque_values: List[float] = []
+        voltage_values: List[float] = []
         lvdt_values: List[float] = []
 
         current = initial_current
@@ -238,6 +240,7 @@ class BrushedMotorModel:
             assert voltage_source is not None
             voltage_command = voltage_source(0.0)
 
+        voltage_values.append(voltage_command)
         lvdt_time_values.append(0.0)
         lvdt_values.append(initial_measurement)
 
@@ -281,6 +284,7 @@ class BrushedMotorModel:
             speed_values.append(speed)
             position_values.append(position)
             torque_values.append(electromagnetic_torque)
+            voltage_values.append(voltage_command)
 
             if feedback_controller is not None:
                 assert controller_steps is not None
@@ -308,6 +312,7 @@ class BrushedMotorModel:
             speed=speed_values,
             position=position_values,
             torque=torque_values,
+            voltage=voltage_values,
             lvdt_time=lvdt_time_values,
             lvdt=lvdt_values,
         )
