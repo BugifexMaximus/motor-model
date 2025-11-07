@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import List, Protocol
 
@@ -22,6 +23,7 @@ class SimulationResult:
     speed: List[float]
     position: List[float]
     torque: List[float]
+    lvdt: List[float]
 
 
 class BrushedMotorModel:
@@ -60,6 +62,11 @@ class BrushedMotorModel:
         coulomb_friction: float = 2.2e-3,
         static_friction: float = 2.5e-3,
         stop_speed_threshold: float = 1e-4,
+        spring_constant: float = 1e-4,
+        spring_compression_ratio: float = 0.4,
+        lvdt_full_scale: float = 0.1,
+        lvdt_noise_std: float = 5e-3,
+        rng: random.Random | None = None,
     ) -> None:
         if kv <= 0:
             raise ValueError("kv must be positive")
@@ -69,6 +76,14 @@ class BrushedMotorModel:
             raise ValueError("inductance must be positive")
         if inertia <= 0:
             raise ValueError("inertia must be positive")
+        if spring_constant < 0:
+            raise ValueError("spring_constant must be non-negative")
+        if not 0.0 <= spring_compression_ratio <= 1.0:
+            raise ValueError("spring_compression_ratio must be between 0 and 1")
+        if lvdt_full_scale <= 0:
+            raise ValueError("lvdt_full_scale must be positive")
+        if lvdt_noise_std < 0:
+            raise ValueError("lvdt_noise_std must be non-negative")
 
         self.resistance = resistance
         self.inductance = inductance
@@ -78,6 +93,11 @@ class BrushedMotorModel:
         self.coulomb_friction = coulomb_friction
         self.static_friction = static_friction
         self.stop_speed_threshold = stop_speed_threshold
+        self.spring_constant = spring_constant
+        self.spring_compression_ratio = spring_compression_ratio
+        self.lvdt_full_scale = lvdt_full_scale
+        self.lvdt_noise_std = lvdt_noise_std
+        self._rng = rng or random.Random()
 
         # Electrical constant ke and torque constant kt in SI units.
         self._ke = 1.0 / kv
@@ -134,6 +154,7 @@ class BrushedMotorModel:
         speed_values: List[float] = []
         position_values: List[float] = []
         torque_values: List[float] = []
+        lvdt_values: List[float] = []
 
         current = initial_current
         speed = initial_speed
@@ -150,7 +171,8 @@ class BrushedMotorModel:
             current += di_dt * dt
 
             electromagnetic_torque = self._kt * current
-            available_torque = electromagnetic_torque - load
+            spring_torque = self._spring_torque(position)
+            available_torque = electromagnetic_torque - load - spring_torque
 
             if abs(speed) < self.stop_speed_threshold and abs(available_torque) <= self.static_friction:
                 # Static friction prevents motion. Clamp speed and torque output.
@@ -165,6 +187,8 @@ class BrushedMotorModel:
 
             position += speed * dt
 
+            lvdt_values.append(self._lvdt_measurement(position))
+
             time_values.append(t)
             current_values.append(current)
             speed_values.append(speed)
@@ -177,6 +201,7 @@ class BrushedMotorModel:
             speed=speed_values,
             position=position_values,
             torque=torque_values,
+            lvdt=lvdt_values,
         )
 
     @staticmethod
@@ -188,3 +213,17 @@ class BrushedMotorModel:
             return value
 
         return constant
+
+    def _spring_torque(self, position: float) -> float:
+        if self.spring_constant == 0.0:
+            return 0.0
+        if position >= 0.0:
+            return self.spring_constant * position
+        return self.spring_constant * self.spring_compression_ratio * position
+
+    def _lvdt_measurement(self, position: float) -> float:
+        normalized = position / self.lvdt_full_scale
+        if self.lvdt_noise_std > 0.0:
+            noise = self._rng.gauss(0.0, self.lvdt_noise_std)
+            normalized += noise
+        return max(-1.0, min(1.0, normalized))
