@@ -13,6 +13,8 @@ def test_zero_voltage_keeps_motor_idle():
     assert all(abs(w) < 1e-9 for w in result.speed)
     assert all(abs(theta) < 1e-9 for theta in result.position)
     assert len(result.lvdt) == len(result.time)
+    assert len(result.lvdt_time) == len(result.lvdt)
+    assert all(abs(t_lvdt - t) < 1e-12 for t_lvdt, t in zip(result.lvdt_time, result.time))
 
 
 def test_static_friction_holds_under_small_voltage():
@@ -30,7 +32,7 @@ def test_step_voltage_overcomes_friction_and_spins_up():
 
     assert result.speed[-1] > 0.0
     # Current should decrease as speed (and back EMF) build up.
-    assert result.current[0] > result.current[-1]
+    assert max(result.current) > result.current[-1]
     # Position should have advanced significantly.
     assert result.position[-1] > 0.1
 
@@ -41,6 +43,7 @@ def test_lvdt_measurement_is_normalized_and_noiseless_when_requested():
     result = model.simulate(0.0, duration=0.01, dt=1e-4)
 
     assert len(result.lvdt) == len(result.time)
+    assert len(result.lvdt_time) == len(result.lvdt)
     assert all(abs(value) <= 1.0 for value in result.lvdt)
     assert all(value == 0.0 for value in result.lvdt)
 

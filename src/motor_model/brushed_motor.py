@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from typing import List, Protocol
@@ -14,6 +15,22 @@ class VoltageSource(Protocol):
         ...
 
 
+class FeedbackController(Protocol):
+    """Protocol for controllers using feedback measurements to set voltage."""
+
+    def reset(
+        self,
+        *,
+        initial_measurement: float,
+        initial_current: float,
+        initial_speed: float,
+    ) -> None:  # pragma: no cover - protocol definition
+        ...
+
+    def update(self, *, time: float, measurement: float) -> float:  # pragma: no cover
+        ...
+
+
 @dataclass(frozen=True)
 class SimulationResult:
     """Stores time-series data produced by a motor simulation."""
@@ -23,6 +40,7 @@ class SimulationResult:
     speed: List[float]
     position: List[float]
     torque: List[float]
+    lvdt_time: List[float]
     lvdt: List[float]
 
 
@@ -120,6 +138,8 @@ class BrushedMotorModel:
         initial_speed: float = 0.0,
         initial_current: float = 0.0,
         load_torque: VoltageSource | float = 0.0,
+        measurement_period: float | None = None,
+        controller_period: float | None = None,
     ) -> SimulationResult:
         """Simulate the motor response to a voltage source.
 
@@ -138,6 +158,13 @@ class BrushedMotorModel:
         load_torque:
             External load torque opposing motion. Either a callable of time or
             a constant torque in N*m.
+        measurement_period:
+            Interval between LVDT samples recorded in the simulation results.
+            Must be a positive multiple of ``dt``. Defaults to ``dt``.
+        controller_period:
+            Period between controller updates when ``voltage`` implements the
+            :class:`FeedbackController` protocol. Must be a positive multiple
+            of ``dt``. Defaults to ``measurement_period`` when omitted.
         """
 
         if dt <= 0:
@@ -145,10 +172,9 @@ class BrushedMotorModel:
         if duration <= 0:
             raise ValueError("duration must be positive")
 
-        voltage_source = self._as_callable(voltage)
-        load_source = self._as_callable(load_torque)
-
-        steps = int(duration / dt)
+        steps = int(round(duration / dt))
+        if not math.isclose(steps * dt, duration, rel_tol=0.0, abs_tol=1e-9):
+            raise ValueError("duration must be an integer multiple of dt")
         time_values: List[float] = []
         current_values: List[float] = []
         speed_values: List[float] = []
@@ -160,14 +186,76 @@ class BrushedMotorModel:
         speed = initial_speed
         position = 0.0
 
-        for step in range(steps + 1):
+        feedback_controller: FeedbackController | None = None
+        voltage_source: VoltageSource | None = None
+        measurement_period = measurement_period or dt
+        if measurement_period <= 0:
+            raise ValueError("measurement_period must be positive")
+        measurement_steps = int(round(measurement_period / dt))
+        if measurement_steps <= 0 or not math.isclose(
+            measurement_steps * dt, measurement_period, rel_tol=0.0, abs_tol=1e-9
+        ):
+            raise ValueError("measurement_period must be a multiple of dt")
+
+        controller_steps: int | None = None
+
+        initial_measurement = self._lvdt_measurement(position)
+
+        if hasattr(voltage, "update") and callable(getattr(voltage, "update")):
+            feedback_controller = voltage  # type: ignore[assignment]
+            reset = getattr(feedback_controller, "reset", None)
+            if callable(reset):
+                reset(
+                    initial_measurement=initial_measurement,
+                    initial_current=current,
+                    initial_speed=speed,
+                )
+            controller_period = controller_period or measurement_period
+            if controller_period <= 0:
+                raise ValueError("controller_period must be positive")
+            controller_steps = int(round(controller_period / dt))
+            if controller_steps <= 0 or not math.isclose(
+                controller_steps * dt,
+                controller_period,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            ):
+                raise ValueError("controller_period must be a multiple of dt")
+        else:
+            voltage_source = self._as_callable(voltage)
+
+        load_source = self._as_callable(load_torque)
+
+        lvdt_time_values: List[float] = []
+        lvdt_values: List[float] = []
+
+        if feedback_controller is not None:
+            assert controller_steps is not None
+            voltage_command = feedback_controller.update(
+                time=0.0, measurement=initial_measurement
+            )
+        else:
+            assert voltage_source is not None
+            voltage_command = voltage_source(0.0)
+
+        lvdt_time_values.append(0.0)
+        lvdt_values.append(initial_measurement)
+
+        time_values.append(0.0)
+        current_values.append(current)
+        speed_values.append(speed)
+        position_values.append(position)
+        torque_values.append(self._kt * current)
+
+        for step in range(steps):
             t = step * dt
-            v = voltage_source(t)
             load = load_source(t)
 
             # Electrical subsystem: di/dt = (V - Ri - ke * omega) / L
             back_emf = self._ke * speed
-            di_dt = (v - self.resistance * current - back_emf) / self.inductance
+            di_dt = (
+                voltage_command - self.resistance * current - back_emf
+            ) / self.inductance
             current += di_dt * dt
 
             electromagnetic_torque = self._kt * current
@@ -175,9 +263,8 @@ class BrushedMotorModel:
             available_torque = electromagnetic_torque - load - spring_torque
 
             if abs(speed) < self.stop_speed_threshold and abs(available_torque) <= self.static_friction:
-                # Static friction prevents motion. Clamp speed and torque output.
+                # Static friction prevents motion. Clamp speed output.
                 speed = 0.0
-                net_torque = 0.0
             else:
                 friction_direction = self._sign(speed) or self._sign(available_torque)
                 dynamic_friction = self.coulomb_friction * friction_direction + self.viscous_friction * speed
@@ -187,13 +274,33 @@ class BrushedMotorModel:
 
             position += speed * dt
 
-            lvdt_values.append(self._lvdt_measurement(position))
+            next_time = (step + 1) * dt
 
-            time_values.append(t)
+            time_values.append(next_time)
             current_values.append(current)
             speed_values.append(speed)
             position_values.append(position)
             torque_values.append(electromagnetic_torque)
+
+            if feedback_controller is not None:
+                assert controller_steps is not None
+                if (step + 1) % measurement_steps == 0:
+                    measurement_time = next_time
+                    measurement = self._lvdt_measurement(position)
+                    lvdt_time_values.append(measurement_time)
+                    lvdt_values.append(measurement)
+                    if (step + 1) % controller_steps == 0:
+                        voltage_command = feedback_controller.update(
+                            time=measurement_time, measurement=measurement
+                        )
+            else:
+                if (step + 1) % measurement_steps == 0:
+                    measurement_time = next_time
+                    measurement = self._lvdt_measurement(position)
+                    lvdt_time_values.append(measurement_time)
+                    lvdt_values.append(measurement)
+                assert voltage_source is not None
+                voltage_command = voltage_source(next_time)
 
         return SimulationResult(
             time=time_values,
@@ -201,6 +308,7 @@ class BrushedMotorModel:
             speed=speed_values,
             position=position_values,
             torque=torque_values,
+            lvdt_time=lvdt_time_values,
             lvdt=lvdt_values,
         )
 
