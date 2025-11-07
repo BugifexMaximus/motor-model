@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -33,7 +34,7 @@ class MotorSimulation:
     def __init__(self, motor_kwargs: Dict[str, float], controller_kwargs: Dict[str, float]) -> None:
         self._motor_kwargs = motor_kwargs
         self._controller_kwargs = controller_kwargs
-        self.history_duration = 8.0
+        self.history_duration = 10.0
         self.max_points = 8000
         self.reset()
 
@@ -164,7 +165,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.canvas = FigureCanvas(self.figure)
         self.axes = self.figure.add_subplot(111)
         self.axes.set_xlabel("Time [s]")
-        self.axes.set_ylabel("Position [rad]")
+        self.axes.set_ylabel("Position [deg]")
         self.axes.grid(True)
         layout.addWidget(self.canvas, stretch=3)
 
@@ -206,12 +207,13 @@ class ControllerDemo(QtWidgets.QMainWindow):
         layout = QtWidgets.QFormLayout(box)
 
         self.target_spin = QtWidgets.QDoubleSpinBox()
-        self.target_spin.setDecimals(4)
-        self.target_spin.setSingleStep(0.01)
-        self.target_spin.setRange(-0.5, 0.5)
+        self.target_spin.setDecimals(2)
+        self.target_spin.setSingleStep(0.1)
+        self.target_spin.setRange(-30.0, 30.0)
+        self.target_spin.setSuffix("°")
         self.target_spin.setValue(0.0)
         self.target_spin.valueChanged.connect(self._on_target_changed)
-        layout.addRow("Setpoint [rad]", self.target_spin)
+        layout.addRow("Setpoint [deg]", self.target_spin)
 
         note = QtWidgets.QLabel("Click the plot to set a new target position.")
         note.setWordWrap(True)
@@ -365,8 +367,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
         layout = QtWidgets.QFormLayout(box)
 
         self.time_label = QtWidgets.QLabel("0.000 s")
-        self.position_label = QtWidgets.QLabel("0.000 rad")
-        self.speed_label = QtWidgets.QLabel("0.000 rad/s")
+        self.position_label = QtWidgets.QLabel("0.00 deg")
+        self.speed_label = QtWidgets.QLabel("0.00 deg/s")
         self.current_label = QtWidgets.QLabel("0.000 A")
         self.voltage_label = QtWidgets.QLabel("0.000 V")
 
@@ -387,7 +389,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         motor_kwargs = {name: control.value() for name, control in self.motor_controls.items()}
 
-        target_position = self.target_spin.value()
+        target_position_deg = self.target_spin.value()
+        target_position = math.radians(target_position_deg)
         lvdt_scale = motor_kwargs["lvdt_full_scale"]
         target_lvdt = 0.0 if lvdt_scale <= 0 else max(-1.0, min(1.0, target_position / lvdt_scale))
 
@@ -419,12 +422,14 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         self._block_updates = True
         try:
-            self.target_spin.setRange(-lvdt_scale, lvdt_scale)
-            self.target_spin.setValue(self.simulation.target_position())
+            lvdt_scale_deg = math.degrees(lvdt_scale)
+            max_deg = min(30.0, lvdt_scale_deg)
+            self.target_spin.setRange(-max_deg, max_deg)
+            self.target_spin.setValue(math.degrees(self.simulation.target_position()))
         finally:
             self._block_updates = False
 
-        self._update_plot(force_limits=True)
+        self._update_plot()
         self._update_status_labels()
 
     def _on_parameters_changed(self) -> None:
@@ -437,13 +442,15 @@ class ControllerDemo(QtWidgets.QMainWindow):
             return
         if not self.simulation:
             return
-        self.simulation.set_target_position(value)
+        self.simulation.set_target_position(math.radians(value))
 
     def _on_plot_clicked(self, event) -> None:  # type: ignore[override]
         if event.inaxes != self.axes or not self.simulation:
             return
         self._block_updates = True
         try:
+            if event.ydata is None:
+                return
             self.target_spin.setValue(float(event.ydata))
         finally:
             self._block_updates = False
@@ -458,34 +465,22 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self._update_plot()
         self._update_status_labels()
 
-    def _update_plot(self, *, force_limits: bool = False) -> None:
+    def _update_plot(self) -> None:
         if not self.simulation:
             return
         times = list(self.simulation.time_history)
         if not times:
             return
-        positions = list(self.simulation.position_history)
-        setpoints = list(self.simulation.setpoint_history)
+        positions_deg = [math.degrees(value) for value in self.simulation.position_history]
+        setpoints_deg = [math.degrees(value) for value in self.simulation.setpoint_history]
 
-        self.position_line.set_data(times, positions)
-        self.setpoint_line.set_data(times, setpoints)
+        self.position_line.set_data(times, positions_deg)
+        self.setpoint_line.set_data(times, setpoints_deg)
 
-        t_max = times[-1]
-        t_min = max(0.0, t_max - self.simulation.history_duration)
-        if force_limits:
-            self.axes.set_xlim(t_min, t_max + 1e-9)
-        else:
-            current_limits = self.axes.get_xlim()
-            if abs(current_limits[1] - current_limits[0]) < 1e-9:
-                self.axes.set_xlim(t_min, t_max + 1e-9)
-            else:
-                self.axes.set_xlim(t_min, t_max + 1e-9)
-
-        value_min = min(min(positions), min(setpoints))
-        value_max = max(max(positions), max(setpoints))
-        span = value_max - value_min
-        margin = 0.05 * span if span > 1e-9 else 0.05
-        self.axes.set_ylim(value_min - margin, value_max + margin)
+        t_max = max(10.0, times[-1])
+        t_min = t_max - self.simulation.history_duration
+        self.axes.set_xlim(t_min, t_max)
+        self.axes.set_ylim(-30.0, 30.0)
 
         self.canvas.draw_idle()
 
@@ -493,8 +488,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
         if not self.simulation:
             return
         self.time_label.setText(f"{self.simulation.time:0.3f} s")
-        self.position_label.setText(f"{self.simulation.position:0.4f} rad")
-        self.speed_label.setText(f"{self.simulation.speed:0.4f} rad/s")
+        self.position_label.setText(f"{math.degrees(self.simulation.position):0.2f} deg")
+        self.speed_label.setText(f"{math.degrees(self.simulation.speed):0.2f} deg/s")
         self.current_label.setText(f"{self.simulation.current:0.3f} A")
         self.voltage_label.setText(f"{self.simulation.voltage:0.3f} V")
 
