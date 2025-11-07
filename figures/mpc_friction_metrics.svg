@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900.0" height="360.0" viewBox="0 0 900.0 360.0">
+  <text x="450.00" y="40.00" font-size="22" text-anchor="middle" font-weight="bold">Performance metrics</text>
+  <text x="183.33" y="50.00" font-size="14" text-anchor="middle">Steady-state error [m]</text>
+  <text x="70.00" y="111.67" font-size="12" text-anchor="end">Static 0.5×</text>
+  <rect x="84.00" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#f03278"/>
+  <text x="114.44" y="111.67" font-size="11" text-anchor="middle">0.000</text>
+  <rect x="152.89" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#d84481"/>
+  <text x="183.33" y="111.67" font-size="11" text-anchor="middle">-0.000</text>
+  <rect x="221.78" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#ef3278"/>
+  <text x="252.22" y="111.67" font-size="11" text-anchor="middle">0.000</text>
+  <text x="70.00" y="185.00" font-size="12" text-anchor="end">Static 1.0×</text>
+  <rect x="84.00" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#f03278"/>
+  <text x="114.44" y="185.00" font-size="11" text-anchor="middle">0.000</text>
+  <rect x="152.89" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#d84481"/>
+  <text x="183.33" y="185.00" font-size="11" text-anchor="middle">-0.000</text>
+  <rect x="221.78" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#ef3278"/>
+  <text x="252.22" y="185.00" font-size="11" text-anchor="middle">0.000</text>
+  <text x="70.00" y="258.33" font-size="12" text-anchor="end">Static 1.5×</text>
+  <rect x="84.00" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#f03278"/>
+  <text x="114.44" y="258.33" font-size="11" text-anchor="middle">0.000</text>
+  <rect x="152.89" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#d84481"/>
+  <text x="183.33" y="258.33" font-size="11" text-anchor="middle">-0.000</text>
+  <rect x="221.78" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#28d2c8"/>
+  <text x="252.22" y="258.33" font-size="11" text-anchor="middle">-0.005</text>
+  <text x="114.44" y="315.00" font-size="12" text-anchor="middle">Coulomb 0.5×</text>
+  <text x="183.33" y="315.00" font-size="12" text-anchor="middle">Coulomb 1.0×</text>
+  <text x="252.22" y="315.00" font-size="12" text-anchor="middle">Coulomb 1.5×</text>
+  <text x="450.00" y="50.00" font-size="14" text-anchor="middle">Settling time [s]</text>
+  <rect x="350.67" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#28d2c8"/>
+  <text x="381.11" y="111.67" font-size="11" text-anchor="middle">0.296</text>
+  <rect x="419.56" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#9e9e9e"/>
+  <text x="450.00" y="111.67" font-size="11" text-anchor="middle">n/a</text>
+  <rect x="488.44" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#f03278"/>
+  <text x="518.89" y="111.67" font-size="11" text-anchor="middle">0.428</text>
+  <rect x="350.67" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#28d2c8"/>
+  <text x="381.11" y="185.00" font-size="11" text-anchor="middle">0.296</text>
+  <rect x="419.56" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#9e9e9e"/>
+  <text x="450.00" y="185.00" font-size="11" text-anchor="middle">n/a</text>
+  <rect x="488.44" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#f03278"/>
+  <text x="518.89" y="185.00" font-size="11" text-anchor="middle">0.428</text>
+  <rect x="350.67" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#28d2c8"/>
+  <text x="381.11" y="258.33" font-size="11" text-anchor="middle">0.296</text>
+  <rect x="419.56" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#9e9e9e"/>
+  <text x="450.00" y="258.33" font-size="11" text-anchor="middle">n/a</text>
+  <rect x="488.44" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#9e9e9e"/>
+  <text x="518.89" y="258.33" font-size="11" text-anchor="middle">n/a</text>
+  <text x="716.67" y="50.00" font-size="14" text-anchor="middle">Peak speed [rad/s]</text>
+  <rect x="617.33" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#f03278"/>
+  <text x="647.78" y="111.67" font-size="11" text-anchor="middle">5.237</text>
+  <rect x="686.22" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#3dc0bf"/>
+  <text x="716.67" y="111.67" font-size="11" text-anchor="middle">3.526</text>
+  <rect x="755.11" y="74.00" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#28d2c8"/>
+  <text x="785.56" y="111.67" font-size="11" text-anchor="middle">3.322</text>
+  <rect x="617.33" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#f03278"/>
+  <text x="647.78" y="185.00" font-size="11" text-anchor="middle">5.237</text>
+  <rect x="686.22" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#3dc0bf"/>
+  <text x="716.67" y="185.00" font-size="11" text-anchor="middle">3.526</text>
+  <rect x="755.11" y="147.33" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#28d2c8"/>
+  <text x="785.56" y="185.00" font-size="11" text-anchor="middle">3.322</text>
+  <rect x="617.33" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#f03278"/>
+  <text x="647.78" y="258.33" font-size="11" text-anchor="middle">5.237</text>
+  <rect x="686.22" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#3dc0bf"/>
+  <text x="716.67" y="258.33" font-size="11" text-anchor="middle">3.526</text>
+  <rect x="755.11" y="220.67" width="60.89" height="65.33" stroke="#404040" stroke-width="0.8" fill="#28d2c8"/>
+  <text x="785.56" y="258.33" font-size="11" text-anchor="middle">3.322</text>
+</svg>
