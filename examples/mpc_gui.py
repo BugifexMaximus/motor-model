@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import sys
-from collections import deque
 from dataclasses import dataclass
 from typing import Dict
 
@@ -12,8 +11,12 @@ from PyQt5 import QtCore, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-from motor_model.brushed_motor import BrushedMotorModel
-from motor_model.mpc_controller import LVDTMPCController, MPCWeights
+from motor_model.mpc_controller import MPCWeights
+from motor_model.mpc_simulation import (
+    MotorSimulation,
+    build_default_controller_kwargs,
+    build_default_motor_kwargs,
+)
 
 
 @dataclass
@@ -27,121 +30,6 @@ class DoubleParamConfig:
     decimals: int
     default: float
     suffix: str = ""
-
-class MotorSimulation:
-    """Lightweight time-domain simulation suitable for interactive use."""
-
-    def __init__(self, motor_kwargs: Dict[str, float], controller_kwargs: Dict[str, float]) -> None:
-        self._motor_kwargs = motor_kwargs
-        self._controller_kwargs = controller_kwargs
-        self.history_duration = 10.0
-        self.max_points = 8000
-        self.reset()
-
-    def reset(self) -> None:
-        self.motor = BrushedMotorModel(**self._motor_kwargs)
-
-        controller_kwargs = dict(self._controller_kwargs)
-        weights = controller_kwargs.pop("weights")
-        if not isinstance(weights, MPCWeights):
-            raise TypeError("weights must be an MPCWeights instance")
-        self.controller = LVDTMPCController(self.motor, weights=weights, **controller_kwargs)
-
-        self.plant_dt = self.controller.dt / max(1, controller_kwargs.get("internal_substeps", 1))
-        self.measurement_steps = max(1, int(round(self.controller.dt / self.plant_dt)))
-        self._steps_since_measurement = 0
-
-        self.time = 0.0
-        self.current = 0.0
-        self.speed = 0.0
-        self.position = 0.0
-
-        initial_measurement = self.motor._lvdt_measurement(self.position)
-        self.controller.reset(
-            initial_measurement=initial_measurement,
-            initial_current=self.current,
-            initial_speed=self.speed,
-        )
-        self.voltage = self.controller.update(time=0.0, measurement=initial_measurement)
-
-        self.time_history: deque[float] = deque([0.0], maxlen=self.max_points)
-        self.position_history: deque[float] = deque([self.position], maxlen=self.max_points)
-        self.setpoint_history: deque[float] = deque([self.target_position()], maxlen=self.max_points)
-        self.voltage_history: deque[float] = deque([self.voltage], maxlen=self.max_points)
-        self.speed_history: deque[float] = deque([self.speed], maxlen=self.max_points)
-        self.current_history: deque[float] = deque([self.current], maxlen=self.max_points)
-
-    def plant_dt_ms(self) -> float:
-        return self.plant_dt * 1000.0
-
-    def target_position(self) -> float:
-        return self.controller.target_lvdt * self.motor.lvdt_full_scale
-
-    def set_target_position(self, position: float) -> None:
-        if self.motor.lvdt_full_scale <= 0:
-            return
-        measurement = max(-1.0, min(1.0, position / self.motor.lvdt_full_scale))
-        self.controller.target_lvdt = measurement
-        if self.setpoint_history:
-            self.setpoint_history[-1] = self.target_position()
-
-    def step(self, steps: int) -> None:
-        for _ in range(steps):
-            self._single_step()
-
-    def _single_step(self) -> None:
-        dt = self.plant_dt
-
-        back_emf = self.motor._ke * self.speed
-        di_dt = (self.voltage - self.motor.resistance * self.current - back_emf) / self.motor.inductance
-        self.current += di_dt * dt
-
-        electromagnetic_torque = self.motor._kt * self.current
-        spring_torque = self.motor._spring_torque(self.position)
-        available_torque = electromagnetic_torque - spring_torque
-
-        if (
-            abs(self.speed) < self.motor.stop_speed_threshold
-            and abs(available_torque) <= self.motor.static_friction
-        ):
-            self.speed = 0.0
-        else:
-            friction_direction = self.motor._sign(self.speed) or self.motor._sign(available_torque)
-            dynamic_friction = (
-                self.motor.coulomb_friction * friction_direction + self.motor.viscous_friction * self.speed
-            )
-            angular_accel = (available_torque - dynamic_friction) / self.motor.inertia
-            self.speed += angular_accel * dt
-
-        self.position += self.speed * dt
-        self.time += dt
-
-        self.time_history.append(self.time)
-        self.position_history.append(self.position)
-        self.setpoint_history.append(self.target_position())
-        self.voltage_history.append(self.voltage)
-        self.speed_history.append(self.speed)
-        self.current_history.append(self.current)
-
-        self._steps_since_measurement += 1
-        if self._steps_since_measurement >= self.measurement_steps:
-            measurement = self.motor._lvdt_measurement(self.position)
-            self.voltage = self.controller.update(time=self.time, measurement=measurement)
-            self._steps_since_measurement = 0
-
-        self._trim_history()
-
-    def _trim_history(self) -> None:
-        if not self.time_history:
-            return
-        min_time = self.time - self.history_duration
-        while self.time_history and self.time_history[0] < min_time:
-            self.time_history.popleft()
-            self.position_history.popleft()
-            self.setpoint_history.popleft()
-            self.voltage_history.popleft()
-            self.speed_history.popleft()
-            self.current_history.popleft()
 
 
 class ControllerDemo(QtWidgets.QMainWindow):
@@ -225,19 +113,36 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form = QtWidgets.QFormLayout(box)
 
         self.motor_controls: Dict[str, QtWidgets.QDoubleSpinBox] = {}
+        defaults = build_default_motor_kwargs(lvdt_noise_std=5e-3)
         configs: Dict[str, DoubleParamConfig] = {
-            "resistance": DoubleParamConfig("Resistance [Ω]", 1.0, 100.0, 0.1, 2, 28.0),
-            "inductance": DoubleParamConfig("Inductance [H]", 1e-4, 0.2, 1e-4, 6, 16e-3),
-            "kv": DoubleParamConfig("Speed constant [rad/s/V]", 0.1, 200.0, 0.1, 2, 7.0),
-            "inertia": DoubleParamConfig("Inertia [kg·m²]", 1e-7, 1e-2, 1e-7, 7, 5e-5),
-            "viscous_friction": DoubleParamConfig("Viscous friction [N·m·s/rad]", 0.0, 1e-2, 1e-6, 7, 2e-5),
-            "coulomb_friction": DoubleParamConfig("Coulomb friction [N·m]", 0.0, 0.02, 1e-4, 4, 2.2e-3),
-            "static_friction": DoubleParamConfig("Static friction [N·m]", 0.0, 0.02, 1e-4, 4, 2.5e-3),
-            "stop_speed_threshold": DoubleParamConfig("Stop threshold [rad/s]", 0.0, 0.1, 1e-4, 6, 1e-4),
-            "spring_constant": DoubleParamConfig("Spring constant [N·m/rad]", 0.0, 1e-1, 1e-4, 6, 1e-4),
-            "spring_compression_ratio": DoubleParamConfig("Compression ratio", 0.0, 1.0, 0.01, 3, 0.4),
-            "lvdt_full_scale": DoubleParamConfig("LVDT full scale [rad]", 0.01, 1.0, 0.01, 3, 0.1),
-            "lvdt_noise_std": DoubleParamConfig("LVDT noise σ", 0.0, 0.1, 1e-4, 4, 5e-3),
+            "resistance": DoubleParamConfig("Resistance [Ω]", 1.0, 100.0, 0.1, 2, defaults["resistance"]),
+            "inductance": DoubleParamConfig("Inductance [H]", 1e-4, 0.2, 1e-4, 6, defaults["inductance"]),
+            "kv": DoubleParamConfig(
+                "Speed constant [rad/s/V]", 0.1, 200.0, 0.1, 2, defaults["kv"]
+            ),
+            "inertia": DoubleParamConfig("Inertia [kg·m²]", 1e-7, 1e-2, 1e-7, 7, defaults["inertia"]),
+            "viscous_friction": DoubleParamConfig(
+                "Viscous friction [N·m·s/rad]", 0.0, 1e-2, 1e-6, 7, defaults["viscous_friction"]
+            ),
+            "coulomb_friction": DoubleParamConfig(
+                "Coulomb friction [N·m]", 0.0, 0.02, 1e-4, 4, defaults["coulomb_friction"]
+            ),
+            "static_friction": DoubleParamConfig(
+                "Static friction [N·m]", 0.0, 0.02, 1e-4, 4, defaults["static_friction"]
+            ),
+            "stop_speed_threshold": DoubleParamConfig(
+                "Stop threshold [rad/s]", 0.0, 0.1, 1e-4, 6, defaults["stop_speed_threshold"]
+            ),
+            "spring_constant": DoubleParamConfig(
+                "Spring constant [N·m/rad]", 0.0, 1e-1, 1e-4, 6, defaults["spring_constant"]
+            ),
+            "spring_compression_ratio": DoubleParamConfig(
+                "Compression ratio", 0.0, 1.0, 0.01, 3, defaults["spring_compression_ratio"]
+            ),
+            "lvdt_full_scale": DoubleParamConfig(
+                "LVDT full scale [rad]", 0.01, 1.0, 0.01, 3, defaults["lvdt_full_scale"]
+            ),
+            "lvdt_noise_std": DoubleParamConfig("LVDT noise σ", 0.0, 0.1, 1e-4, 4, defaults["lvdt_noise_std"]),
         }
 
         for name, config in configs.items():
@@ -263,18 +168,20 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         self.controller_controls: Dict[str, QtWidgets.QWidget] = {}
 
+        defaults = build_default_controller_kwargs()
+
         dt_spin = QtWidgets.QDoubleSpinBox()
         dt_spin.setDecimals(5)
         dt_spin.setRange(1e-4, 0.1)
         dt_spin.setSingleStep(1e-4)
-        dt_spin.setValue(0.005)
+        dt_spin.setValue(defaults["dt"])
         dt_spin.valueChanged.connect(self._on_parameters_changed)
         controller_form.addRow("Controller dt [s]", dt_spin)
         self.controller_controls["dt"] = dt_spin
 
         horizon_spin = QtWidgets.QSpinBox()
         horizon_spin.setRange(1, 12)
-        horizon_spin.setValue(4)
+        horizon_spin.setValue(int(defaults["horizon"]))
         horizon_spin.valueChanged.connect(self._on_parameters_changed)
         controller_form.addRow("Horizon", horizon_spin)
         self.controller_controls["horizon"] = horizon_spin
@@ -283,7 +190,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         voltage_spin.setDecimals(2)
         voltage_spin.setRange(1.0, 60.0)
         voltage_spin.setSingleStep(0.5)
-        voltage_spin.setValue(10.0)
+        voltage_spin.setValue(defaults["voltage_limit"])
         voltage_spin.valueChanged.connect(self._on_parameters_changed)
         controller_form.addRow("Voltage limit [V]", voltage_spin)
         self.controller_controls["voltage_limit"] = voltage_spin
@@ -291,7 +198,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         candidate_spin = QtWidgets.QSpinBox()
         candidate_spin.setRange(3, 15)
         candidate_spin.setSingleStep(2)
-        candidate_spin.setValue(5)
+        candidate_spin.setValue(int(defaults["candidate_count"]))
         candidate_spin.valueChanged.connect(self._on_parameters_changed)
         controller_form.addRow("Candidate count", candidate_spin)
         self.controller_controls["candidate_count"] = candidate_spin
@@ -300,7 +207,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         tolerance_spin.setDecimals(3)
         tolerance_spin.setRange(0.0, 0.5)
         tolerance_spin.setSingleStep(0.005)
-        tolerance_spin.setValue(0.02)
+        tolerance_spin.setValue(defaults["position_tolerance"])
         tolerance_spin.valueChanged.connect(self._on_parameters_changed)
         controller_form.addRow("Position tolerance", tolerance_spin)
         self.controller_controls["position_tolerance"] = tolerance_spin
@@ -309,7 +216,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         penalty_spin.setDecimals(2)
         penalty_spin.setRange(0.0, 1000.0)
         penalty_spin.setSingleStep(1.0)
-        penalty_spin.setValue(50.0)
+        penalty_spin.setValue(defaults["static_friction_penalty"])
         penalty_spin.valueChanged.connect(self._on_parameters_changed)
         controller_form.addRow("Static friction penalty", penalty_spin)
         self.controller_controls["static_friction_penalty"] = penalty_spin
@@ -329,7 +236,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         substeps_spin = QtWidgets.QSpinBox()
         substeps_spin.setRange(1, 10)
-        substeps_spin.setValue(1)
+        substeps_spin.setValue(int(defaults["internal_substeps"]))
         substeps_spin.valueChanged.connect(self._on_parameters_changed)
         controller_form.addRow("Internal substeps", substeps_spin)
         self.controller_controls["internal_substeps"] = substeps_spin
