@@ -51,9 +51,15 @@ class MotorSimulation:
         *,
         history_duration: float = 10.0,
         max_points: int = 8000,
+        controller_motor_kwargs: Dict[str, float] | None = None,
     ) -> None:
-        self._motor_kwargs = motor_kwargs
-        self._controller_kwargs = controller_kwargs
+        self._motor_kwargs = dict(motor_kwargs)
+        self._controller_kwargs = dict(controller_kwargs)
+        self._controller_motor_kwargs = (
+            dict(controller_motor_kwargs)
+            if controller_motor_kwargs is not None
+            else dict(motor_kwargs)
+        )
         self.history_duration = history_duration
         self.max_points = max_points
         self.reset()
@@ -65,12 +71,15 @@ class MotorSimulation:
         """Reset the motor, controller and simulation history."""
 
         self.motor = BrushedMotorModel(**self._motor_kwargs)
+        controller_motor = BrushedMotorModel(**self._controller_motor_kwargs)
 
         controller_kwargs = dict(self._controller_kwargs)
         weights = controller_kwargs.pop("weights")
         if not isinstance(weights, MPCWeights):
             raise TypeError("weights must be an MPCWeights instance")
-        self.controller = LVDTMPCController(self.motor, weights=weights, **controller_kwargs)
+        self.controller = LVDTMPCController(
+            controller_motor, weights=weights, **controller_kwargs
+        )
 
         substeps = max(1, controller_kwargs.get("internal_substeps", 1))
         self.plant_dt = self.controller.dt / substeps

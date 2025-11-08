@@ -90,31 +90,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------
     # UI builders
     # ------------------------------------------------------------------
-    def _create_target_section(self) -> QtWidgets.QGroupBox:
-        box = QtWidgets.QGroupBox("Target")
-        layout = QtWidgets.QFormLayout(box)
-
-        self.target_spin = QtWidgets.QDoubleSpinBox()
-        self.target_spin.setDecimals(2)
-        self.target_spin.setSingleStep(0.1)
-        self.target_spin.setRange(-30.0, 30.0)
-        self.target_spin.setSuffix("°")
-        self.target_spin.setValue(0.0)
-        self.target_spin.valueChanged.connect(self._on_target_changed)
-        layout.addRow("Setpoint [deg]", self.target_spin)
-
-        note = QtWidgets.QLabel("Click the plot to set a new target position.")
-        note.setWordWrap(True)
-        layout.addRow(note)
-        return box
-
-    def _create_motor_section(self) -> QtWidgets.QGroupBox:
-        box = QtWidgets.QGroupBox("Motor parameters")
-        form = QtWidgets.QFormLayout(box)
-
-        self.motor_controls: Dict[str, QtWidgets.QDoubleSpinBox] = {}
-        defaults = build_default_motor_kwargs(lvdt_noise_std=5e-3)
-        configs: Dict[str, DoubleParamConfig] = {
+    def _motor_param_configs(self, defaults: Dict[str, float]) -> Dict[str, DoubleParamConfig]:
+        return {
             "resistance": DoubleParamConfig("Resistance [Ω]", 1.0, 100.0, 0.1, 2, defaults["resistance"]),
             "inductance": DoubleParamConfig("Inductance [H]", 1e-4, 0.2, 1e-4, 6, defaults["inductance"]),
             "kv": DoubleParamConfig(
@@ -142,29 +119,74 @@ class ControllerDemo(QtWidgets.QMainWindow):
             "lvdt_full_scale": DoubleParamConfig(
                 "LVDT full scale [rad]", 0.01, 1.0, 0.01, 3, defaults["lvdt_full_scale"]
             ),
-            "lvdt_noise_std": DoubleParamConfig("LVDT noise σ", 0.0, 0.1, 1e-4, 4, defaults["lvdt_noise_std"]),
+            "lvdt_noise_std": DoubleParamConfig(
+                "LVDT noise σ", 0.0, 0.1, 1e-4, 4, defaults["lvdt_noise_std"]
+            ),
         }
 
+    def _add_param_control(
+        self,
+        form: QtWidgets.QFormLayout,
+        name: str,
+        config: DoubleParamConfig,
+        storage: Dict[str, QtWidgets.QDoubleSpinBox],
+    ) -> None:
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setDecimals(config.decimals)
+        spin.setRange(config.minimum, config.maximum)
+        spin.setSingleStep(config.step)
+        spin.setValue(config.default)
+        if config.suffix:
+            spin.setSuffix(config.suffix)
+        spin.valueChanged.connect(self._on_parameters_changed)
+        storage[name] = spin
+        form.addRow(config.label, spin)
+
+    def _create_target_section(self) -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox("Target")
+        layout = QtWidgets.QFormLayout(box)
+
+        self.target_spin = QtWidgets.QDoubleSpinBox()
+        self.target_spin.setDecimals(2)
+        self.target_spin.setSingleStep(0.1)
+        self.target_spin.setRange(-30.0, 30.0)
+        self.target_spin.setSuffix("°")
+        self.target_spin.setValue(0.0)
+        self.target_spin.valueChanged.connect(self._on_target_changed)
+        layout.addRow("Setpoint [deg]", self.target_spin)
+
+        note = QtWidgets.QLabel("Click the plot to set a new target position.")
+        note.setWordWrap(True)
+        layout.addRow(note)
+        return box
+
+    def _create_motor_section(self) -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox("Physical motor model")
+        form = QtWidgets.QFormLayout()
+        box.setLayout(form)
+
+        description = QtWidgets.QLabel(
+            "These parameters describe the simulated physical motor and measurement system."
+        )
+        description.setWordWrap(True)
+        form.addRow(description)
+
+        self.motor_controls: Dict[str, QtWidgets.QDoubleSpinBox] = {}
+        defaults = build_default_motor_kwargs(lvdt_noise_std=5e-3)
+        configs = self._motor_param_configs(defaults)
+
         for name, config in configs.items():
-            spin = QtWidgets.QDoubleSpinBox()
-            spin.setDecimals(config.decimals)
-            spin.setRange(config.minimum, config.maximum)
-            spin.setSingleStep(config.step)
-            spin.setValue(config.default)
-            if config.suffix:
-                spin.setSuffix(config.suffix)
-            spin.valueChanged.connect(self._on_parameters_changed)
-            self.motor_controls[name] = spin
-            form.addRow(config.label, spin)
+            self._add_param_control(form, name, config, self.motor_controls)
 
         return box
 
     def _create_controller_section(self) -> QtWidgets.QGroupBox:
-        box = QtWidgets.QGroupBox("Controller parameters")
+        box = QtWidgets.QGroupBox("MPC configuration")
         layout = QtWidgets.QVBoxLayout(box)
 
-        controller_form = QtWidgets.QFormLayout()
-        layout.addLayout(controller_form)
+        algorithm_box = QtWidgets.QGroupBox("Algorithm tuning")
+        algorithm_form = QtWidgets.QFormLayout(algorithm_box)
+        layout.addWidget(algorithm_box)
 
         self.controller_controls: Dict[str, QtWidgets.QWidget] = {}
 
@@ -176,14 +198,14 @@ class ControllerDemo(QtWidgets.QMainWindow):
         dt_spin.setSingleStep(1e-4)
         dt_spin.setValue(defaults["dt"])
         dt_spin.valueChanged.connect(self._on_parameters_changed)
-        controller_form.addRow("Controller dt [s]", dt_spin)
+        algorithm_form.addRow("Controller dt [s]", dt_spin)
         self.controller_controls["dt"] = dt_spin
 
         horizon_spin = QtWidgets.QSpinBox()
         horizon_spin.setRange(1, 12)
         horizon_spin.setValue(int(defaults["horizon"]))
         horizon_spin.valueChanged.connect(self._on_parameters_changed)
-        controller_form.addRow("Horizon", horizon_spin)
+        algorithm_form.addRow("Horizon", horizon_spin)
         self.controller_controls["horizon"] = horizon_spin
 
         voltage_spin = QtWidgets.QDoubleSpinBox()
@@ -192,7 +214,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         voltage_spin.setSingleStep(0.5)
         voltage_spin.setValue(defaults["voltage_limit"])
         voltage_spin.valueChanged.connect(self._on_parameters_changed)
-        controller_form.addRow("Voltage limit [V]", voltage_spin)
+        algorithm_form.addRow("Voltage limit [V]", voltage_spin)
         self.controller_controls["voltage_limit"] = voltage_spin
 
         candidate_spin = QtWidgets.QSpinBox()
@@ -200,7 +222,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         candidate_spin.setSingleStep(2)
         candidate_spin.setValue(int(defaults["candidate_count"]))
         candidate_spin.valueChanged.connect(self._on_parameters_changed)
-        controller_form.addRow("Candidate count", candidate_spin)
+        algorithm_form.addRow("Candidate count", candidate_spin)
         self.controller_controls["candidate_count"] = candidate_spin
 
         tolerance_spin = QtWidgets.QDoubleSpinBox()
@@ -209,7 +231,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         tolerance_spin.setSingleStep(0.005)
         tolerance_spin.setValue(defaults["position_tolerance"])
         tolerance_spin.valueChanged.connect(self._on_parameters_changed)
-        controller_form.addRow("Position tolerance", tolerance_spin)
+        algorithm_form.addRow("Position tolerance", tolerance_spin)
         self.controller_controls["position_tolerance"] = tolerance_spin
 
         penalty_spin = QtWidgets.QDoubleSpinBox()
@@ -218,13 +240,24 @@ class ControllerDemo(QtWidgets.QMainWindow):
         penalty_spin.setSingleStep(1.0)
         penalty_spin.setValue(defaults["static_friction_penalty"])
         penalty_spin.valueChanged.connect(self._on_parameters_changed)
-        controller_form.addRow("Static friction penalty", penalty_spin)
+        algorithm_form.addRow("Static friction penalty", penalty_spin)
         self.controller_controls["static_friction_penalty"] = penalty_spin
+
+        substeps_spin = QtWidgets.QSpinBox()
+        substeps_spin.setRange(1, 10)
+        substeps_spin.setValue(int(defaults["internal_substeps"]))
+        substeps_spin.valueChanged.connect(self._on_parameters_changed)
+        algorithm_form.addRow("Internal substeps", substeps_spin)
+        self.controller_controls["internal_substeps"] = substeps_spin
 
         self.auto_friction_check = QtWidgets.QCheckBox("Automatic friction compensation")
         self.auto_friction_check.setChecked(True)
         self.auto_friction_check.stateChanged.connect(self._on_parameters_changed)
         layout.addWidget(self.auto_friction_check)
+
+        manual_box = QtWidgets.QGroupBox("Manual overrides")
+        manual_form = QtWidgets.QFormLayout(manual_box)
+        layout.addWidget(manual_box)
 
         self.friction_spin = QtWidgets.QDoubleSpinBox()
         self.friction_spin.setDecimals(3)
@@ -232,14 +265,25 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.friction_spin.setSingleStep(0.1)
         self.friction_spin.setValue(3.0)
         self.friction_spin.valueChanged.connect(self._on_parameters_changed)
-        controller_form.addRow("Manual friction compensation [V]", self.friction_spin)
+        manual_form.addRow("Manual friction compensation [V]", self.friction_spin)
 
-        substeps_spin = QtWidgets.QSpinBox()
-        substeps_spin.setRange(1, 10)
-        substeps_spin.setValue(int(defaults["internal_substeps"]))
-        substeps_spin.valueChanged.connect(self._on_parameters_changed)
-        controller_form.addRow("Internal substeps", substeps_spin)
-        self.controller_controls["internal_substeps"] = substeps_spin
+        model_box = QtWidgets.QGroupBox("MPC internal model")
+        model_layout = QtWidgets.QVBoxLayout(model_box)
+        model_description = QtWidgets.QLabel(
+            "Adjust the physical parameters used inside the controller's predictive model."
+        )
+        model_description.setWordWrap(True)
+        model_layout.addWidget(model_description)
+
+        model_form = QtWidgets.QFormLayout()
+        model_layout.addLayout(model_form)
+        layout.addWidget(model_box)
+
+        self.controller_model_controls: Dict[str, QtWidgets.QDoubleSpinBox] = {}
+        controller_motor_defaults = build_default_motor_kwargs(lvdt_noise_std=5e-3)
+        controller_configs = self._motor_param_configs(controller_motor_defaults)
+        for name, config in controller_configs.items():
+            self._add_param_control(model_form, name, config, self.controller_model_controls)
 
         weights_box = QtWidgets.QGroupBox("MPC weights")
         weights_form = QtWidgets.QFormLayout(weights_box)
@@ -294,7 +338,13 @@ class ControllerDemo(QtWidgets.QMainWindow):
         if self._setup_in_progress:
             return
 
-        motor_kwargs = {name: control.value() for name, control in self.motor_controls.items()}
+        motor_kwargs = {
+            name: float(control.value()) for name, control in self.motor_controls.items()
+        }
+        controller_motor_kwargs = {
+            name: float(control.value())
+            for name, control in self.controller_model_controls.items()
+        }
 
         target_position_deg = self.target_spin.value()
         target_position = math.radians(target_position_deg)
@@ -324,7 +374,11 @@ class ControllerDemo(QtWidgets.QMainWindow):
         else:
             controller_kwargs["friction_compensation"] = float(self.friction_spin.value())
 
-        self.simulation = MotorSimulation(motor_kwargs, controller_kwargs)
+        self.simulation = MotorSimulation(
+            motor_kwargs,
+            controller_kwargs,
+            controller_motor_kwargs=controller_motor_kwargs,
+        )
         self.simulation.set_target_position(target_position)
 
         self._block_updates = True
