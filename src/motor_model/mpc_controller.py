@@ -80,7 +80,9 @@ class LVDTMPCController:
             Relative inductance spread used to create a min-max ensemble of
             prediction models. For example ``0.5`` evaluates each candidate
             sequence on 0.5×, 1× and 1.5× the nominal inductance and minimises
-            the worst-case cost.
+            the worst-case cost. This setting only affects the controller when
+            ``robust_electrical`` is ``False`` because the quasi-static
+            approximation ignores inductance dynamics.
         pd_blend:
             Weight applied to the MPC voltage before blending with the
             stabilising PD controller (``0`` = pure PD, ``1`` = pure MPC).
@@ -192,6 +194,12 @@ class LVDTMPCController:
             construction or a prior adaptation. When neither a previous value
             nor a new one are supplied the controller derives the compensation
             from the motor parameters.
+
+        Notes
+        -----
+        The controller state (current estimate, speed estimate and position)
+        is left untouched so that callers can manage re-initialisation
+        explicitly when the operating conditions change.
         """
 
         if voltage_limit is not None:
@@ -222,20 +230,28 @@ class LVDTMPCController:
         self._state = (initial_current, initial_speed, position)
         self._last_voltage = None
         self._last_measured_position = position
-        self._last_measurement_time = 0.0
+        self._last_measurement_time = None
 
     def update(self, *, time: float, measurement: float) -> float:
         """Return the next control action using the latest LVDT measurement."""
 
         # Update the internally tracked position with the measured one.
         measured_position = self._measurement_to_position(measurement)
+        normalized_measurement = self._position_to_measurement(measured_position)
         current, _, _ = self._state
 
         estimated_speed = 0.0
         if self._last_measured_position is not None and self._last_measurement_time is not None:
             dt = time - self._last_measurement_time
-            if dt > 0:
-                estimated_speed = (measured_position - self._last_measured_position) / dt
+            if dt <= 0.0:
+                raise ValueError("Controller update time must be strictly increasing")
+            tolerance = max(1e-9, 0.25 * self.dt)
+            if abs(dt - self.dt) > tolerance:
+                raise ValueError(
+                    "Controller update period deviates from configured dt: "
+                    f"observed={dt:.6g}s expected={self.dt:.6g}s"
+                )
+            estimated_speed = (measured_position - self._last_measured_position) / dt
 
         self._state = (current, estimated_speed, measured_position)
         self._last_measured_position = measured_position
@@ -255,7 +271,7 @@ class LVDTMPCController:
 
         best_voltage = best_sequence[0]
 
-        position_error = self.target_lvdt - measurement
+        position_error = self.target_lvdt - normalized_measurement
         if (
             abs(self._state[1]) < self._motor.stop_speed_threshold
             and abs(position_error) > self.position_tolerance
@@ -334,7 +350,8 @@ class LVDTMPCController:
             values.add(max(-voltage, -self.voltage_limit))
 
         # Guarantee the availability of the minimum motion voltage in both
-        # polarities to overcome static friction when necessary.
+        # polarities to overcome static friction when necessary. This may grow
+        # the candidate set beyond the requested ``candidate_count``.
         values.add(min(self.friction_compensation, self.voltage_limit))
         values.add(max(-self.friction_compensation, -self.voltage_limit))
 
@@ -344,6 +361,9 @@ class LVDTMPCController:
         self, motor: BrushedMotorModel
     ) -> Tuple[BrushedMotorModel, ...]:
         models: List[BrushedMotorModel] = [motor]
+        if self.robust_electrical:
+            return tuple(models)
+
         if self.inductance_rel_uncertainty > 0.0:
             lower_factor = max(1.0 - self.inductance_rel_uncertainty, 1e-6)
             upper_factor = 1.0 + self.inductance_rel_uncertainty
@@ -423,9 +443,9 @@ class LVDTMPCController:
             previous_voltage = voltage
 
             if (
-                abs(state[1]) < motor.stop_speed_threshold
+                abs(predicted_state[1]) < motor.stop_speed_threshold
                 and abs(position_error) > self.position_tolerance
-                and abs(voltage) <= self.friction_compensation
+                and abs(voltage) < self.friction_compensation
             ):
                 cost += self.static_friction_penalty
 

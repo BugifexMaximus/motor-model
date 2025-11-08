@@ -40,8 +40,12 @@ class MotorSimulation:
     The class advances the :class:`~motor_model.brushed_motor.BrushedMotorModel`
     using an explicit Euler integrator and keeps a short rolling history of the
     state variables.  It mirrors the simplified model inside the
-    :class:`~motor_model.mpc_controller.LVDTMPCController` so that GUI and unit
-    tests can exercise the control loop without requiring the PyQt event loop.
+    :class:`~motor_model.mpc_controller.LVDTMPCController` when the controller
+    is configured without the quasi-static electrical approximation
+    (``robust_electrical=False``) and both share the same parameters. This is
+    sufficient for GUI and unit tests to exercise the control loop without
+    requiring the PyQt event loop, while still allowing the controller to use a
+    more robust internal model when desired.
     """
 
     def __init__(
@@ -74,7 +78,7 @@ class MotorSimulation:
         controller_motor = BrushedMotorModel(**self._controller_motor_kwargs)
 
         controller_kwargs = dict(self._controller_kwargs)
-        weights = controller_kwargs.pop("weights")
+        weights = controller_kwargs.pop("weights", MPCWeights())
         if not isinstance(weights, MPCWeights):
             raise TypeError("weights must be an MPCWeights instance")
         self.controller = LVDTMPCController(
