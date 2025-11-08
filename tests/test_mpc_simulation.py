@@ -14,11 +14,23 @@ from motor_model import (
 )
 
 
-def _make_simulation(*, motor_overrides=None, controller_overrides=None):
+def _make_simulation(
+    *,
+    motor_overrides=None,
+    controller_overrides=None,
+    controller_model_overrides=None,
+):
     motor_kwargs = build_default_motor_kwargs(**(motor_overrides or {}))
     controller_kwargs = build_default_controller_kwargs(**(controller_overrides or {}))
     controller_kwargs["weights"] = MPCWeights()  # ensure a fresh copy
-    return MotorSimulation(motor_kwargs, controller_kwargs)
+    controller_model_kwargs = None
+    if controller_model_overrides:
+        controller_model_kwargs = build_default_motor_kwargs(**controller_model_overrides)
+    return MotorSimulation(
+        motor_kwargs,
+        controller_kwargs,
+        controller_motor_kwargs=controller_model_kwargs,
+    )
 
 
 def test_simulation_remains_bounded_at_zero_setpoint():
@@ -89,3 +101,19 @@ def test_no_divergence_for_varied_parameters(
     max_voltage = max(abs(v) for v in history.voltage)
     voltage_limit = sim.controller.voltage_limit
     assert max_voltage <= voltage_limit + 1e-6
+
+
+def test_controller_model_parameters_can_differ_from_physical():
+    sim = _make_simulation(
+        motor_overrides={"resistance": 3.5, "inertia": 9e-5},
+        controller_model_overrides={"resistance": 7.0, "inertia": 4e-5},
+    )
+    sim.set_target_position(math.radians(6.0))
+    sim.run_for(0.6)
+
+    # The controller should be using a separate motor model instance.
+    assert not math.isclose(sim.motor.resistance, sim.controller._motor.resistance)
+    assert not math.isclose(sim.motor.inertia, sim.controller._motor.inertia)
+
+    state = sim.state()
+    assert math.isfinite(state.position)
