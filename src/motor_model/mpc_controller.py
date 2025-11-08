@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from itertools import product
-from typing import Iterable, Tuple
+from typing import Iterable, List, Tuple
 
 from .brushed_motor import BrushedMotorModel
 
@@ -60,11 +61,33 @@ class LVDTMPCController:
         Minimum absolute voltage command (in Volts) used when the rotor is
         static and the error exceeds the tolerance. When ``None`` the value is
         derived from the motor parameters.
-    internal_substeps:
-        Number of internal integration slices used by the MPC prediction model
-        within a single controller period. Setting this so that ``dt`` divided
-        by ``internal_substeps`` matches the plant integration step improves
-        model accuracy.
+        internal_substeps:
+            Number of internal integration slices used by the MPC prediction model
+            within a single controller period. Setting this so that ``dt`` divided
+            by ``internal_substeps`` matches the plant integration step improves
+            model accuracy.
+        robust_electrical:
+            When ``True`` (default) the internal prediction model uses the
+            quasi-static electrical approximation to eliminate inductance
+            sensitivity. Setting it to ``False`` reverts to the inductive
+            integration previously used.
+        electrical_alpha:
+            Optional smoothing factor applied when ``robust_electrical`` is
+            enabled. A value of ``1.0`` snaps the predicted current to the
+            steady-state, whereas smaller values low-pass filter the update.
+            When omitted the controller uses ``1.0``.
+        inductance_rel_uncertainty:
+            Relative inductance spread used to create a min-max ensemble of
+            prediction models. For example ``0.5`` evaluates each candidate
+            sequence on 0.5×, 1× and 1.5× the nominal inductance and minimises
+            the worst-case cost.
+        pd_blend:
+            Weight applied to the MPC voltage before blending with the
+            stabilising PD controller (``0`` = pure PD, ``1`` = pure MPC).
+        pd_kp:
+            Proportional gain used by the stabilising PD term.
+        pd_kd:
+            Derivative gain used by the stabilising PD term.
     """
 
     def __init__(
@@ -81,6 +104,12 @@ class LVDTMPCController:
         static_friction_penalty: float = 50.0,
         friction_compensation: float | None = None,
         internal_substeps: int = 1,
+        robust_electrical: bool = True,
+        electrical_alpha: float | None = None,
+        inductance_rel_uncertainty: float = 0.5,
+        pd_blend: float = 0.7,
+        pd_kp: float = 6.0,
+        pd_kd: float = 0.4,
     ) -> None:
         if dt <= 0:
             raise ValueError("dt must be positive")
@@ -99,6 +128,18 @@ class LVDTMPCController:
         if internal_substeps <= 0:
             raise ValueError("internal_substeps must be positive")
 
+        if electrical_alpha is not None:
+            if not 0.0 <= electrical_alpha <= 1.0:
+                raise ValueError("electrical_alpha must be within [0, 1]")
+        if inductance_rel_uncertainty < 0.0:
+            raise ValueError("inductance_rel_uncertainty must be non-negative")
+        if not 0.0 <= pd_blend <= 1.0:
+            raise ValueError("pd_blend must be within [0, 1]")
+        if pd_kp <= 0.0:
+            raise ValueError("pd_kp must be positive")
+        if pd_kd < 0.0:
+            raise ValueError("pd_kd must be non-negative")
+
         self.dt = dt
         self.horizon = horizon
         self.voltage_limit = voltage_limit
@@ -107,9 +148,16 @@ class LVDTMPCController:
         self.position_tolerance = position_tolerance
         self.static_friction_penalty = static_friction_penalty
         self.internal_substeps = internal_substeps
+        self.robust_electrical = robust_electrical
+        self._electrical_alpha = 1.0 if electrical_alpha is None else electrical_alpha
+        self.inductance_rel_uncertainty = inductance_rel_uncertainty
+        self.pd_blend = pd_blend
+        self.pd_kp = pd_kp
+        self.pd_kd = pd_kd
 
         self._candidate_count = candidate_count
         self._user_friction_compensation = friction_compensation
+        self._prediction_models: Tuple[BrushedMotorModel, ...] = tuple()
 
         self._apply_motor_parameters(motor, friction_compensation)
 
@@ -217,10 +265,26 @@ class LVDTMPCController:
             best_voltage = direction * self.friction_compensation
 
         best_voltage = self._clamp_voltage(best_voltage)
-        self._state = self._predict_next(self._state, best_voltage)
-        self._last_voltage = best_voltage
 
-        return best_voltage
+        u_pd = self.pd_kp * position_error - self.pd_kd * estimated_speed
+        blended_voltage = (
+            self.pd_blend * best_voltage + (1.0 - self.pd_blend) * u_pd
+        )
+        blended_voltage = self._clamp_voltage(blended_voltage)
+
+        if (
+            abs(self._state[1]) < self._motor.stop_speed_threshold
+            and abs(position_error) > self.position_tolerance
+            and abs(blended_voltage) < self.friction_compensation
+        ):
+            direction = 1.0 if position_error >= 0.0 else -1.0
+            blended_voltage = direction * self.friction_compensation
+            blended_voltage = self._clamp_voltage(blended_voltage)
+
+        self._state = self._predict_next(self._state, blended_voltage)
+        self._last_voltage = blended_voltage
+
+        return blended_voltage
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -238,6 +302,7 @@ class LVDTMPCController:
             motor, friction_compensation
         )
         self._voltage_candidates = self._build_voltage_candidates(self._candidate_count)
+        self._prediction_models = self._build_prediction_models(motor)
 
     def _determine_friction_compensation(
         self,
@@ -275,18 +340,78 @@ class LVDTMPCController:
 
         return tuple(sorted(values))
 
+    def _build_prediction_models(
+        self, motor: BrushedMotorModel
+    ) -> Tuple[BrushedMotorModel, ...]:
+        models: List[BrushedMotorModel] = [motor]
+        if self.inductance_rel_uncertainty > 0.0:
+            lower_factor = max(1.0 - self.inductance_rel_uncertainty, 1e-6)
+            upper_factor = 1.0 + self.inductance_rel_uncertainty
+
+            if not math.isclose(lower_factor, 1.0, rel_tol=0.0, abs_tol=1e-12):
+                models.append(
+                    self._clone_motor(motor, inductance=motor.inductance * lower_factor)
+                )
+            if not math.isclose(upper_factor, 1.0, rel_tol=0.0, abs_tol=1e-12):
+                models.append(
+                    self._clone_motor(motor, inductance=motor.inductance * upper_factor)
+                )
+
+        return tuple(models)
+
+    def _clone_motor(
+        self, motor: BrushedMotorModel, *, inductance: float
+    ) -> BrushedMotorModel:
+        inductance = max(inductance, 1e-9)
+        return BrushedMotorModel(
+            resistance=motor.resistance,
+            inductance=inductance,
+            kv=motor.kv,
+            inertia=motor.inertia,
+            viscous_friction=motor.viscous_friction,
+            coulomb_friction=motor.coulomb_friction,
+            static_friction=motor.static_friction,
+            stop_speed_threshold=motor.stop_speed_threshold,
+            spring_constant=motor.spring_constant,
+            spring_compression_ratio=motor.spring_compression_ratio,
+            lvdt_full_scale=motor.lvdt_full_scale,
+            lvdt_noise_std=0.0,
+            rng=motor._rng,
+        )
+
     def _evaluate_sequence(
         self,
         initial_state: Tuple[float, float, float],
         sequence: Tuple[float, ...],
+    ) -> Tuple[float, Tuple[float, float, float]]:
+        worst_cost = float("-inf")
+        nominal_state: Tuple[float, float, float] | None = None
+
+        for index, motor in enumerate(self._prediction_models):
+            cost, state = self._evaluate_sequence_single(initial_state, sequence, motor)
+            if index == 0:
+                nominal_state = state
+            if cost > worst_cost:
+                worst_cost = cost
+
+        if nominal_state is None:
+            nominal_state = initial_state
+
+        return worst_cost, nominal_state
+
+    def _evaluate_sequence_single(
+        self,
+        initial_state: Tuple[float, float, float],
+        sequence: Tuple[float, ...],
+        motor: BrushedMotorModel,
     ) -> Tuple[float, Tuple[float, float, float]]:
         state = initial_state
         cost = 0.0
         previous_voltage = self._last_voltage
 
         for voltage in sequence:
-            predicted_state = self._predict_next(state, voltage)
-            lvdt = self._position_to_measurement(predicted_state[2])
+            predicted_state = self._predict_next_for_model(state, voltage, motor)
+            lvdt = self._position_to_measurement(predicted_state[2], motor=motor)
             position_error = self.target_lvdt - lvdt
             cost += self.weights.position * position_error * position_error
             cost += self.weights.speed * predicted_state[1] * predicted_state[1]
@@ -298,7 +423,7 @@ class LVDTMPCController:
             previous_voltage = voltage
 
             if (
-                abs(state[1]) < self._motor.stop_speed_threshold
+                abs(state[1]) < motor.stop_speed_threshold
                 and abs(position_error) > self.position_tolerance
                 and abs(voltage) <= self.friction_compensation
             ):
@@ -306,7 +431,7 @@ class LVDTMPCController:
 
             state = predicted_state
 
-        terminal_error = self.target_lvdt - self._position_to_measurement(state[2])
+        terminal_error = self.target_lvdt - self._position_to_measurement(state[2], motor=motor)
         cost += self.weights.terminal_position * terminal_error * terminal_error
 
         return cost, state
@@ -316,37 +441,48 @@ class LVDTMPCController:
         state: Tuple[float, float, float],
         voltage: float,
     ) -> Tuple[float, float, float]:
+        return self._predict_next_for_model(state, voltage, self._motor)
+
+    def _predict_next_for_model(
+        self,
+        state: Tuple[float, float, float],
+        voltage: float,
+        motor: BrushedMotorModel,
+    ) -> Tuple[float, float, float]:
         current, speed, position = state
 
         sub_dt = self.dt / self.internal_substeps
 
         for _ in range(self.internal_substeps):
-            di_dt = (
-                voltage
-                - self._motor.resistance * current
-                - self._motor._ke * speed
-            ) / self._motor.inductance
-            current += di_dt * sub_dt
+            if self.robust_electrical:
+                back_emf = motor._ke * speed
+                steady_state_current = (voltage - back_emf) / motor.resistance
+                current += self._electrical_alpha * (steady_state_current - current)
+            else:
+                di_dt = (
+                    voltage
+                    - motor.resistance * current
+                    - motor._ke * speed
+                ) / motor.inductance
+                current += di_dt * sub_dt
 
-            electromagnetic_torque = self._motor._kt * current
-            spring_torque = self._motor._spring_torque(position)
+            electromagnetic_torque = motor._kt * current
+            spring_torque = motor._spring_torque(position)
             available_torque = electromagnetic_torque - spring_torque
 
             if (
-                abs(speed) < self._motor.stop_speed_threshold
-                and abs(available_torque) <= self._motor.static_friction
+                abs(speed) < motor.stop_speed_threshold
+                and abs(available_torque) <= motor.static_friction
             ):
                 speed = 0.0
             else:
-                friction_direction = (
-                    self._motor._sign(speed) or self._motor._sign(available_torque)
-                )
+                friction_direction = motor._sign(speed) or motor._sign(available_torque)
                 dynamic_friction = (
-                    self._motor.coulomb_friction * friction_direction
-                    + self._motor.viscous_friction * speed
+                    motor.coulomb_friction * friction_direction
+                    + motor.viscous_friction * speed
                 )
                 net_torque = available_torque - dynamic_friction
-                angular_acceleration = net_torque / self._motor.inertia
+                angular_acceleration = net_torque / motor.inertia
                 speed += angular_acceleration * sub_dt
 
             position += speed * sub_dt
@@ -357,8 +493,14 @@ class LVDTMPCController:
         measurement = max(-1.0, min(1.0, measurement))
         return measurement * self._motor.lvdt_full_scale
 
-    def _position_to_measurement(self, position: float) -> float:
-        normalized = position / self._motor.lvdt_full_scale
+    def _position_to_measurement(
+        self,
+        position: float,
+        *,
+        motor: BrushedMotorModel | None = None,
+    ) -> float:
+        motor = motor or self._motor
+        normalized = position / motor.lvdt_full_scale
         return max(-1.0, min(1.0, normalized))
 
     def _clamp_voltage(self, voltage: float) -> float:
