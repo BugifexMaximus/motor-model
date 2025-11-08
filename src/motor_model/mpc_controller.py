@@ -99,7 +99,6 @@ class LVDTMPCController:
         if internal_substeps <= 0:
             raise ValueError("internal_substeps must be positive")
 
-        self._motor = motor
         self.dt = dt
         self.horizon = horizon
         self.voltage_limit = voltage_limit
@@ -109,20 +108,58 @@ class LVDTMPCController:
         self.static_friction_penalty = static_friction_penalty
         self.internal_substeps = internal_substeps
 
-        min_motion_voltage = motor.static_friction * motor.resistance / motor._kt
-        if friction_compensation is not None:
-            if friction_compensation <= 0:
-                raise ValueError("friction_compensation must be positive")
-            self.friction_compensation = min(friction_compensation, voltage_limit)
-        else:
-            self.friction_compensation = min(min_motion_voltage * 1.1, voltage_limit)
+        self._candidate_count = candidate_count
+        self._user_friction_compensation = friction_compensation
 
-        self._voltage_candidates = self._build_voltage_candidates(candidate_count)
+        self._apply_motor_parameters(motor, friction_compensation)
 
         self._state: Tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._last_voltage: float | None = None
         self._last_measured_position: float | None = None
         self._last_measurement_time: float | None = None
+
+    def adapt_to_motor(
+        self,
+        motor: BrushedMotorModel,
+        *,
+        candidate_count: int | None = None,
+        voltage_limit: float | None = None,
+        friction_compensation: float | None = None,
+    ) -> None:
+        """Update the internal model to match a new motor configuration.
+
+        Parameters
+        ----------
+        motor:
+            Instance describing the new motor parameters to track.
+        candidate_count:
+            Optional number of voltage candidates to use for the optimisation.
+            When omitted the previous value is kept.
+        voltage_limit:
+            Optional new saturation limit for the controller output. When
+            provided the limit is applied before recomputing the candidate set.
+        friction_compensation:
+            Optional manual friction compensation voltage. Passing ``None`` will
+            keep the previous manual value when one was supplied during
+            construction or a prior adaptation. When neither a previous value
+            nor a new one are supplied the controller derives the compensation
+            from the motor parameters.
+        """
+
+        if voltage_limit is not None:
+            if voltage_limit <= 0:
+                raise ValueError("voltage_limit must be positive")
+            self.voltage_limit = voltage_limit
+
+        if candidate_count is not None:
+            if candidate_count < 3 or candidate_count % 2 == 0:
+                raise ValueError("candidate_count must be an odd integer >= 3")
+            self._candidate_count = candidate_count
+
+        self._apply_motor_parameters(motor, friction_compensation)
+
+        if self._last_voltage is not None:
+            self._last_voltage = self._clamp_voltage(self._last_voltage)
 
     def reset(
         self,
@@ -190,6 +227,35 @@ class LVDTMPCController:
     # ------------------------------------------------------------------
     def _voltage_sequences(self) -> Iterable[Tuple[float, ...]]:
         return product(self._voltage_candidates, repeat=self.horizon)
+
+    def _apply_motor_parameters(
+        self,
+        motor: BrushedMotorModel,
+        friction_compensation: float | None,
+    ) -> None:
+        self._motor = motor
+        self.friction_compensation = self._determine_friction_compensation(
+            motor, friction_compensation
+        )
+        self._voltage_candidates = self._build_voltage_candidates(self._candidate_count)
+
+    def _determine_friction_compensation(
+        self,
+        motor: BrushedMotorModel,
+        friction_compensation: float | None,
+    ) -> float:
+        if friction_compensation is None and self._user_friction_compensation is not None:
+            friction_compensation = self._user_friction_compensation
+        elif friction_compensation is not None:
+            self._user_friction_compensation = friction_compensation
+
+        if friction_compensation is not None:
+            if friction_compensation <= 0:
+                raise ValueError("friction_compensation must be positive")
+            return min(friction_compensation, self.voltage_limit)
+
+        min_motion_voltage = motor.static_friction * motor.resistance / motor._kt
+        return min(min_motion_voltage * 1.1, self.voltage_limit)
 
     def _build_voltage_candidates(self, candidate_count: int) -> Tuple[float, ...]:
         half = candidate_count // 2
