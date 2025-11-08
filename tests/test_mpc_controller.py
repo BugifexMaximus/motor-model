@@ -1,5 +1,7 @@
 """Tests for the LVDT-based MPC controller."""
 
+import math
+
 from motor_model import BrushedMotorModel, LVDTMPCController
 
 
@@ -70,3 +72,52 @@ def test_mpc_handles_small_adjustments():
     final_position = result.position[-1]
     assert final_position > 0.0
     assert final_position < model.lvdt_full_scale * 0.2
+
+
+def test_mpc_adapts_to_new_parameter_sets():
+    base_motor = BrushedMotorModel(lvdt_noise_std=0.0)
+    controller = LVDTMPCController(
+        base_motor,
+        dt=0.01,
+        horizon=3,
+        voltage_limit=6.0,
+        target_lvdt=0.0,
+        candidate_count=5,
+        internal_substeps=5,
+    )
+
+    assert controller.friction_compensation > 0.0
+    original_candidates = controller._voltage_candidates
+
+    new_motor = BrushedMotorModel(
+        resistance=24.0,
+        inductance=12e-3,
+        kv=6.5,
+        inertia=7e-5,
+        viscous_friction=3e-5,
+        coulomb_friction=2.8e-3,
+        static_friction=3.2e-3,
+        lvdt_noise_std=0.0,
+    )
+
+    controller._last_voltage = 10.0
+    controller.adapt_to_motor(
+        new_motor,
+        candidate_count=7,
+        voltage_limit=5.0,
+    )
+
+    assert controller._motor is new_motor
+    expected_friction = min(
+        new_motor.static_friction * new_motor.resistance / new_motor._kt * 1.1,
+        controller.voltage_limit,
+    )
+    assert math.isclose(controller.friction_compensation, expected_friction)
+    assert controller._last_voltage == controller.voltage_limit
+    assert controller._candidate_count == 7
+    assert len(controller._voltage_candidates) >= controller._candidate_count
+    assert controller._voltage_candidates != original_candidates
+    assert any(
+        math.isclose(abs(value), expected_friction, rel_tol=1e-6)
+        for value in controller._voltage_candidates
+    )
