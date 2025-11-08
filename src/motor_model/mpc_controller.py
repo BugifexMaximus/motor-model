@@ -3,23 +3,19 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from itertools import product
 from typing import Iterable, List, Tuple
 
+from ._mpc_common import (
+    MPCWeights,
+    _clamp_symmetric,
+    _clone_motor_with_inductance,
+    _measurement_to_position_value,
+    _position_to_measurement_value,
+    _predict_next_state,
+)
 from .brushed_motor import BrushedMotorModel
-
-
-@dataclass
-class MPCWeights:
-    """Weights used by the MPC cost function."""
-
-    position: float = 280.0
-    speed: float = 1.0
-    voltage: float = 0.02
-    delta_voltage: float = 0.5
-    terminal_position: float = 600.0
-
+from .tube_mpc_controller import TubeMPCController
 
 class LVDTMPCController:
     """Discrete-time MPC controller using LVDT feedback.
@@ -382,22 +378,7 @@ class LVDTMPCController:
     def _clone_motor(
         self, motor: BrushedMotorModel, *, inductance: float
     ) -> BrushedMotorModel:
-        inductance = max(inductance, 1e-9)
-        return BrushedMotorModel(
-            resistance=motor.resistance,
-            inductance=inductance,
-            kv=motor.kv,
-            inertia=motor.inertia,
-            viscous_friction=motor.viscous_friction,
-            coulomb_friction=motor.coulomb_friction,
-            static_friction=motor.static_friction,
-            stop_speed_threshold=motor.stop_speed_threshold,
-            spring_constant=motor.spring_constant,
-            spring_compression_ratio=motor.spring_compression_ratio,
-            lvdt_full_scale=motor.lvdt_full_scale,
-            lvdt_noise_std=0.0,
-            rng=motor._rng,
-        )
+        return _clone_motor_with_inductance(motor, inductance=inductance)
 
     def _evaluate_sequence(
         self,
@@ -469,49 +450,18 @@ class LVDTMPCController:
         voltage: float,
         motor: BrushedMotorModel,
     ) -> Tuple[float, float, float]:
-        current, speed, position = state
-
-        sub_dt = self.dt / self.internal_substeps
-
-        for _ in range(self.internal_substeps):
-            if self.robust_electrical:
-                back_emf = motor._ke * speed
-                steady_state_current = (voltage - back_emf) / motor.resistance
-                current += self._electrical_alpha * (steady_state_current - current)
-            else:
-                di_dt = (
-                    voltage
-                    - motor.resistance * current
-                    - motor._ke * speed
-                ) / motor.inductance
-                current += di_dt * sub_dt
-
-            electromagnetic_torque = motor._kt * current
-            spring_torque = motor._spring_torque(position)
-            available_torque = electromagnetic_torque - spring_torque
-
-            if (
-                abs(speed) < motor.stop_speed_threshold
-                and abs(available_torque) <= motor.static_friction
-            ):
-                speed = 0.0
-            else:
-                friction_direction = motor._sign(speed) or motor._sign(available_torque)
-                dynamic_friction = (
-                    motor.coulomb_friction * friction_direction
-                    + motor.viscous_friction * speed
-                )
-                net_torque = available_torque - dynamic_friction
-                angular_acceleration = net_torque / motor.inertia
-                speed += angular_acceleration * sub_dt
-
-            position += speed * sub_dt
-
-        return current, speed, position
+        return _predict_next_state(
+            state,
+            voltage,
+            motor=motor,
+            dt=self.dt,
+            internal_substeps=self.internal_substeps,
+            robust_electrical=self.robust_electrical,
+            electrical_alpha=self._electrical_alpha,
+        )
 
     def _measurement_to_position(self, measurement: float) -> float:
-        measurement = max(-1.0, min(1.0, measurement))
-        return measurement * self._motor.lvdt_full_scale
+        return _measurement_to_position_value(measurement, self._motor)
 
     def _position_to_measurement(
         self,
@@ -520,8 +470,7 @@ class LVDTMPCController:
         motor: BrushedMotorModel | None = None,
     ) -> float:
         motor = motor or self._motor
-        normalized = position / motor.lvdt_full_scale
-        return max(-1.0, min(1.0, normalized))
+        return _position_to_measurement_value(position, motor)
 
     def _clamp_voltage(self, voltage: float) -> float:
-        return max(-self.voltage_limit, min(self.voltage_limit, voltage))
+        return _clamp_symmetric(voltage, self.voltage_limit)

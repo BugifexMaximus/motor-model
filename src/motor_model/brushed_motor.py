@@ -59,8 +59,9 @@ class BrushedMotorModel:
     inductance: float
         Winding inductance (Henries).
     kv: float
-        Speed constant in rad/s per Volt. The electrical constant (back-EMF)
-        and torque constant are derived from this value.
+        Speed constant in rad/s per Volt. The default converts a ``7 RPM/V``
+        motor constant to SI units. The electrical constant (back-EMF) and
+        torque constant are derived from this value.
     inertia: float
         Rotor inertia (kg*m^2).
     viscous_friction: float
@@ -79,13 +80,13 @@ class BrushedMotorModel:
         *,
         resistance: float = 28.0,
         inductance: float = 16e-3,
-        kv: float = 7.0,
-        inertia: float = 5e-5,
-        viscous_friction: float = 2e-5,
-        coulomb_friction: float = 2.2e-3,
-        static_friction: float = 2.5e-3,
+        kv: float = 7.0 * 2.0 * math.pi / 60.0,
+        inertia: float = 4.8e-4,
+        viscous_friction: float = 1.9e-4,
+        coulomb_friction: float = 2.1e-2,
+        static_friction: float = 2.4e-2,
         stop_speed_threshold: float = 1e-4,
-        spring_constant: float = 1e-4,
+        spring_constant: float = 9.5e-4,
         spring_compression_ratio: float = 0.4,
         lvdt_full_scale: float = 0.1,
         lvdt_noise_std: float = 5e-3,

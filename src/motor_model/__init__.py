@@ -1,7 +1,7 @@
 """Motor modeling utilities."""
 
 from .brushed_motor import BrushedMotorModel, SimulationResult
-from .mpc_controller import LVDTMPCController, MPCWeights
+from .mpc_controller import LVDTMPCController, MPCWeights, TubeMPCController
 from .mpc_simulation import (
     MotorSimulation,
     SimulationHistory,
@@ -14,6 +14,7 @@ __all__ = [
     "BrushedMotorModel",
     "SimulationResult",
     "LVDTMPCController",
+    "TubeMPCController",
     "MPCWeights",
     "MotorSimulation",
     "SimulationHistory",
