@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, Tuple, Literal
 
-from .brushed_motor import BrushedMotorModel
+from .brushed_motor import BrushedMotorModel, rpm_per_volt_to_rad_per_sec_per_volt
 from .mpc_controller import LVDTMPCController, MPCWeights
 from .tube_mpc_controller import TubeMPCController
 
@@ -241,13 +241,13 @@ def build_default_motor_kwargs(**overrides: float) -> Dict[str, float]:
     kwargs: Dict[str, float] = {
         "resistance": 28.0,
         "inductance": 16e-3,
-        "kv": 7.0,
-        "inertia": 5e-5,
-        "viscous_friction": 2e-5,
-        "coulomb_friction": 2.2e-3,
-        "static_friction": 2.5e-3,
+        "kv": rpm_per_volt_to_rad_per_sec_per_volt(7.0),
+        "inertia": 4.8e-4,
+        "viscous_friction": 1.9e-4,
+        "coulomb_friction": 2.1e-2,
+        "static_friction": 2.4e-2,
         "stop_speed_threshold": 1e-4,
-        "spring_constant": 1e-4,
+        "spring_constant": 9.5e-4,
         "spring_compression_ratio": 0.4,
         "lvdt_full_scale": math.radians(30.0),
         "lvdt_noise_std": 0.0,

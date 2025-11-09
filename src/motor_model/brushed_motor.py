@@ -7,6 +7,21 @@ import random
 from dataclasses import dataclass
 from typing import List, Protocol
 
+RPM_PER_VOLT_TO_RAD_PER_SEC_PER_VOLT = 2.0 * math.pi / 60.0
+RAD_PER_SEC_PER_VOLT_TO_RPM_PER_VOLT = 60.0 / (2.0 * math.pi)
+
+
+def rpm_per_volt_to_rad_per_sec_per_volt(value: float) -> float:
+    """Convert a speed constant expressed in RPM/V into SI units."""
+
+    return value * RPM_PER_VOLT_TO_RAD_PER_SEC_PER_VOLT
+
+
+def rad_per_sec_per_volt_to_rpm_per_volt(value: float) -> float:
+    """Convert a speed constant expressed in rad/s/V into RPM/V."""
+
+    return value * RAD_PER_SEC_PER_VOLT_TO_RPM_PER_VOLT
+
 
 class VoltageSource(Protocol):
     """Protocol for time-dependent voltage sources used in simulations."""
@@ -80,7 +95,7 @@ class BrushedMotorModel:
         *,
         resistance: float = 28.0,
         inductance: float = 16e-3,
-        kv: float = 7.0 * 2.0 * math.pi / 60.0,
+        kv: float = rpm_per_volt_to_rad_per_sec_per_volt(7.0),
         inertia: float = 4.8e-4,
         viscous_friction: float = 1.9e-4,
         coulomb_friction: float = 2.1e-2,
@@ -126,6 +141,12 @@ class BrushedMotorModel:
         # Electrical constant ke and torque constant kt in SI units.
         self._ke = 1.0 / kv
         self._kt = 1.0 / kv
+
+    @property
+    def speed_constant_rpm_per_volt(self) -> float:
+        """Return the motor speed constant expressed in RPM per Volt."""
+
+        return rad_per_sec_per_volt_to_rpm_per_volt(self.kv)
 
     @staticmethod
     def _sign(value: float) -> float:
