@@ -276,21 +276,41 @@ class ContMPCController:
         return auto_value, user_value, effective
 
     def _dynamic_friction_compensation(self, position_error: float) -> float:
-        error = abs(position_error)
+        e = abs(position_error)
         auto_value = self._auto_friction_compensation
         user_value = self._active_user_friction_compensation
 
+        # 1) Never enforce a floor inside the tight tolerance band.
+        if e <= self.position_tolerance:
+            return 0.0
+
+        # 2) No user value: ramp auto friction in with error, don't keep it constant.
         if user_value is None:
-            return auto_value
+            # Below low threshold: no floor yet.
+            if e <= self.friction_blend_error_low:
+                return 0.0
+            # Above high threshold: full auto_value.
+            if e >= self.friction_blend_error_high:
+                return min(auto_value, self.voltage_limit)
 
-        if error <= self.friction_blend_error_low:
-            alpha = 0.0
-        elif error >= self.friction_blend_error_high:
-            alpha = 1.0
-        else:
-            span = self.friction_blend_error_high - self.friction_blend_error_low
-            alpha = (error - self.friction_blend_error_low) / span
+            # Between: linear ramp 0 -> auto_value.
+            alpha = (e - self.friction_blend_error_low) / (
+                self.friction_blend_error_high - self.friction_blend_error_low
+            )
+            return min(alpha * auto_value, self.voltage_limit)
 
+        # 3) User + auto: blend between them based on error.
+        if e <= self.friction_blend_error_low:
+            # Near target: prefer smaller auto_value.
+            return min(auto_value, self.voltage_limit)
+        if e >= self.friction_blend_error_high:
+            # Far away: use the stronger user value.
+            return min(user_value, self.voltage_limit)
+
+        # Between: interpolate.
+        alpha = (e - self.friction_blend_error_low) / (
+            self.friction_blend_error_high - self.friction_blend_error_low
+        )
         blended = (1.0 - alpha) * auto_value + alpha * user_value
         return min(blended, self.voltage_limit)
 
