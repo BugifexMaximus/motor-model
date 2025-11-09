@@ -301,6 +301,8 @@ def build_default_tube_controller_kwargs(**overrides: float) -> Dict[str, float]
         "tube_max_iterations": 500,
         "lqr_state_weight": (2.0, 0.2, 5.0),
         "lqr_input_weight": 0.5,
+        "integral_gain": 0.05,
+        "integral_limit": 5.0,
         "weights": MPCWeights(),
     }
     kwargs.update(overrides)

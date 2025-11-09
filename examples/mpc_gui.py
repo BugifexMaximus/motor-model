@@ -427,6 +427,26 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Tube max iterations", tube_iter_spin)
         controls["tube_max_iterations"] = tube_iter_spin
 
+        integral_gain_spin = self._create_double_spin(
+            0.0,
+            2.0,
+            0.01,
+            2,
+            defaults["integral_gain"],
+        )
+        form.addRow("Integral gain", integral_gain_spin)
+        controls["integral_gain"] = integral_gain_spin
+
+        integral_limit_spin = self._create_double_spin(
+            0.1,
+            50.0,
+            0.1,
+            1,
+            defaults["integral_limit"],
+        )
+        form.addRow("Integral limit", integral_limit_spin)
+        controls["integral_limit"] = integral_limit_spin
+
         lqr_current_spin = self._create_double_spin(0.0, 50.0, 0.1, 2, defaults["lqr_state_weight"][0])
         form.addRow("LQR weight (current)", lqr_current_spin)
         controls["lqr_state_weight_current"] = lqr_current_spin
@@ -547,6 +567,12 @@ class ControllerDemo(QtWidgets.QMainWindow):
                     ),
                     "lqr_input_weight": float(
                         cast(QtWidgets.QDoubleSpinBox, controls["lqr_input_weight"]).value()
+                    ),
+                    "integral_gain": float(
+                        cast(QtWidgets.QDoubleSpinBox, controls["integral_gain"]).value()
+                    ),
+                    "integral_limit": float(
+                        cast(QtWidgets.QDoubleSpinBox, controls["integral_limit"]).value()
                     ),
                 }
             )
