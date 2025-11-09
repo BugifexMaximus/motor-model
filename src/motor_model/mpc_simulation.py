@@ -79,6 +79,7 @@ class MotorSimulation:
 
         self.history_duration = history_duration
         self.max_points = max_points
+        self._history_max_points = max_points
         self._controller_type: ControllerName = controller_type
         self.reset()
 
@@ -105,6 +106,9 @@ class MotorSimulation:
         self.measurement_steps = max(1, int(round(self.controller.dt / self.plant_dt)))
         self._steps_since_measurement = 0
 
+        required_points = max(2, int(math.ceil(self.history_duration / self.plant_dt)) + 1)
+        self._history_max_points = max(self.max_points, required_points)
+
         self.time = 0.0
         self.current = 0.0
         self.speed = 0.0
@@ -118,12 +122,12 @@ class MotorSimulation:
         )
         self.voltage = self.controller.update(time=0.0, measurement=initial_measurement)
 
-        self.time_history: Deque[float] = deque([0.0], maxlen=self.max_points)
-        self.position_history: Deque[float] = deque([self.position], maxlen=self.max_points)
-        self.setpoint_history: Deque[float] = deque([self.target_position()], maxlen=self.max_points)
-        self.voltage_history: Deque[float] = deque([self.voltage], maxlen=self.max_points)
-        self.speed_history: Deque[float] = deque([self.speed], maxlen=self.max_points)
-        self.current_history: Deque[float] = deque([self.current], maxlen=self.max_points)
+        self.time_history: Deque[float] = deque([0.0], maxlen=self._history_max_points)
+        self.position_history: Deque[float] = deque([self.position], maxlen=self._history_max_points)
+        self.setpoint_history: Deque[float] = deque([self.target_position()], maxlen=self._history_max_points)
+        self.voltage_history: Deque[float] = deque([self.voltage], maxlen=self._history_max_points)
+        self.speed_history: Deque[float] = deque([self.speed], maxlen=self._history_max_points)
+        self.current_history: Deque[float] = deque([self.current], maxlen=self._history_max_points)
 
     # ------------------------------------------------------------------
     # Public API used by the GUI and the unit tests

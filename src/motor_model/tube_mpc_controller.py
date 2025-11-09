@@ -105,6 +105,7 @@ class TubeMPCController:
         self._last_measurement_time: float | None = None
 
         self._motor: BrushedMotorModel | None = None
+        self._linearization_motor: BrushedMotorModel | None = None
         self._error_bounds: Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]] | None = None
         self._max_current_estimate: float = 0.0
         self._tightened_voltage_candidates: Tuple[float, ...] = (0.0,)
@@ -253,12 +254,30 @@ class TubeMPCController:
         self, motor: BrushedMotorModel, friction_compensation: float | None
     ) -> None:
         self._motor = motor
+        self._linearization_motor = self._build_linearization_motor(motor)
         self.friction_compensation = self._determine_friction_compensation(
             motor, friction_compensation
         )
         self._error_bounds = self._compute_error_bounds(motor)
         self._max_current_estimate = max(abs(bound) for bound in self._error_bounds[0])
         self._compute_feedback_and_tube()
+
+    def _build_linearization_motor(self, motor: BrushedMotorModel) -> BrushedMotorModel:
+        return BrushedMotorModel(
+            resistance=motor.resistance,
+            inductance=motor.inductance,
+            kv=motor.kv,
+            inertia=motor.inertia,
+            viscous_friction=motor.viscous_friction,
+            coulomb_friction=0.0,
+            static_friction=0.0,
+            stop_speed_threshold=0.0,
+            spring_constant=motor.spring_constant,
+            spring_compression_ratio=motor.spring_compression_ratio,
+            lvdt_full_scale=motor.lvdt_full_scale,
+            lvdt_noise_std=0.0,
+            rng=motor._rng,
+        )
 
     def _determine_friction_compensation(
         self, motor: BrushedMotorModel, friction_compensation: float | None
@@ -297,6 +316,15 @@ class TubeMPCController:
             self._K, self._A_K
         )
         self._tube_set = self._compute_rpi_set(self._A_K, self._disturbance_bounds)
+        if self._error_bounds is not None and self._tube_set is not None:
+            limited_tube = []
+            for tube_axis, error_axis in zip(self._tube_set, self._error_bounds):
+                lower = max(tube_axis[0], error_axis[0])
+                upper = min(tube_axis[1], error_axis[1])
+                if lower > upper:
+                    lower, upper = error_axis
+                limited_tube.append((lower, upper))
+            self._tube_set = tuple(limited_tube)  # type: ignore[assignment]
         self._tightened_voltage_limit = self._compute_tightened_voltage_limit(
             self._K, self._tube_set
         )
@@ -313,6 +341,10 @@ class TubeMPCController:
         epsilon_state = 1e-5
         epsilon_voltage = 1e-4
 
+        motor = self._linearization_motor or self._motor
+        if motor is None:
+            raise RuntimeError("Controller motor parameters have not been initialised")
+
         A_rows = []
         for index in range(3):
             perturb_plus = list(state)
@@ -322,7 +354,7 @@ class TubeMPCController:
             next_plus = _predict_next_state(
                 tuple(perturb_plus),
                 voltage,
-                motor=self._motor,
+                motor=motor,
                 dt=self.dt,
                 internal_substeps=self.internal_substeps,
                 robust_electrical=self.robust_electrical,
@@ -331,7 +363,7 @@ class TubeMPCController:
             next_minus = _predict_next_state(
                 tuple(perturb_minus),
                 voltage,
-                motor=self._motor,
+                motor=motor,
                 dt=self.dt,
                 internal_substeps=self.internal_substeps,
                 robust_electrical=self.robust_electrical,
@@ -348,7 +380,7 @@ class TubeMPCController:
         next_plus = _predict_next_state(
             state,
             voltage + epsilon_voltage,
-            motor=self._motor,
+            motor=motor,
             dt=self.dt,
             internal_substeps=self.internal_substeps,
             robust_electrical=self.robust_electrical,
@@ -357,7 +389,7 @@ class TubeMPCController:
         next_minus = _predict_next_state(
             state,
             voltage - epsilon_voltage,
-            motor=self._motor,
+            motor=motor,
             dt=self.dt,
             internal_substeps=self.internal_substeps,
             robust_electrical=self.robust_electrical,
@@ -451,6 +483,10 @@ class TubeMPCController:
             self.voltage_limit,
         }
 
+        base_motor = self._linearization_motor or self._motor
+        if base_motor is None:
+            raise RuntimeError("Controller motor parameters have not been initialised")
+
         inductance_factors = [1.0]
         if self.inductance_rel_uncertainty > 0.0:
             lower = max(1.0 - self.inductance_rel_uncertainty, 1e-6)
@@ -472,10 +508,10 @@ class TubeMPCController:
                     for voltage in voltage_samples:
                         for factor in inductance_factors:
                             if math.isclose(factor, 1.0, rel_tol=0.0, abs_tol=1e-12):
-                                motor = self._motor
+                                motor = base_motor
                             else:
                                 motor = _clone_motor_with_inductance(
-                                    self._motor, inductance=self._motor.inductance * factor
+                                    base_motor, inductance=base_motor.inductance * factor
                                 )
 
                             real_state = (
@@ -498,7 +534,7 @@ class TubeMPCController:
                             nominal_next = _predict_next_state(
                                 base_nominal,
                                 voltage,
-                                motor=self._motor,
+                                motor=base_motor,
                                 dt=self.dt,
                                 internal_substeps=self.internal_substeps,
                                 robust_electrical=self.robust_electrical,
@@ -597,6 +633,8 @@ class TubeMPCController:
             max_value += max(candidates)
         delta = max(abs(min_value), abs(max_value))
         tightened = max(0.0, self.voltage_limit - delta)
+        if tightened <= 0.0:
+            return self.voltage_limit
         return tightened
 
     def _build_voltage_candidates(self, limit: float) -> Tuple[float, ...]:
@@ -622,13 +660,13 @@ class TubeMPCController:
         position_bounds = (-self._motor.lvdt_full_scale, self._motor.lvdt_full_scale)
         tube_position = tube[2]
         margin = max(abs(tube_position[0]), abs(tube_position[1]))
+        full_half_range = 0.5 * (position_bounds[1] - position_bounds[0])
+        if margin >= full_half_range:
+            return position_bounds
         tightened = (
             position_bounds[0] + margin,
             position_bounds[1] - margin,
         )
-        if tightened[0] > tightened[1]:
-            center = 0.5 * (tightened[0] + tightened[1])
-            return (center, center)
         return tightened
 
     def _voltage_sequences(self) -> Iterable[Tuple[float, ...]]:
