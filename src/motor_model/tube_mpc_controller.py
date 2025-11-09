@@ -484,7 +484,8 @@ class TubeMPCController:
         }
 
         base_motor = self._linearization_motor or self._motor
-        if base_motor is None:
+        real_motor = self._motor or self._linearization_motor
+        if base_motor is None or real_motor is None:
             raise RuntimeError("Controller motor parameters have not been initialised")
 
         inductance_factors = [1.0]
@@ -508,10 +509,10 @@ class TubeMPCController:
                     for voltage in voltage_samples:
                         for factor in inductance_factors:
                             if math.isclose(factor, 1.0, rel_tol=0.0, abs_tol=1e-12):
-                                motor = base_motor
+                                motor = real_motor
                             else:
                                 motor = _clone_motor_with_inductance(
-                                    base_motor, inductance=base_motor.inductance * factor
+                                    real_motor, inductance=real_motor.inductance * factor
                                 )
 
                             real_state = (

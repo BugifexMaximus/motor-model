@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence, Tuple
 
@@ -44,7 +45,14 @@ def _predict_next_state(
         if robust_electrical:
             back_emf = motor._ke * speed
             steady_state_current = (voltage - back_emf) / motor.resistance
-            current += electrical_alpha * (steady_state_current - current)
+            if motor.inductance > 0.0:
+                base_alpha = -math.expm1(
+                    -sub_dt * motor.resistance / motor.inductance
+                )
+            else:
+                base_alpha = 1.0
+            alpha = max(0.0, min(1.0, base_alpha * electrical_alpha))
+            current += alpha * (steady_state_current - current)
         else:
             di_dt = (
                 voltage

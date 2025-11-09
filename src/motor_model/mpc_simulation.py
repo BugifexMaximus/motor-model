@@ -7,8 +7,9 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, Tuple, Literal
 
+from ._mpc_common import MPCWeights
 from .brushed_motor import BrushedMotorModel, rpm_per_volt_to_rad_per_sec_per_volt
-from .mpc_controller import LVDTMPCController, MPCWeights
+from .mpc_controller import LVDTMPCController
 from .tube_mpc_controller import TubeMPCController
 
 ControllerName = Literal["lvdtnom", "tube"]

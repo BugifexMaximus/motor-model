@@ -1,12 +1,13 @@
 """Motor modeling utilities."""
 
+from ._mpc_common import MPCWeights
 from .brushed_motor import (
     BrushedMotorModel,
     SimulationResult,
     rad_per_sec_per_volt_to_rpm_per_volt,
     rpm_per_volt_to_rad_per_sec_per_volt,
 )
-from .mpc_controller import LVDTMPCController, MPCWeights, TubeMPCController
+from .mpc_controller import LVDTMPCController, TubeMPCController
 from .mpc_simulation import (
     MotorSimulation,
     SimulationHistory,
