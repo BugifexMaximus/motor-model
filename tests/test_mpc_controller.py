@@ -121,3 +121,49 @@ def test_mpc_adapts_to_new_parameter_sets():
         math.isclose(abs(value), expected_friction, rel_tol=1e-6)
         for value in controller._voltage_candidates
     )
+
+
+def test_dynamic_friction_compensation_blends_manual_and_auto():
+    motor = BrushedMotorModel(lvdt_noise_std=0.0)
+    manual_fc = 4.0
+    controller = LVDTMPCController(
+        motor,
+        dt=0.01,
+        horizon=3,
+        voltage_limit=6.0,
+        target_lvdt=0.0,
+        candidate_count=5,
+        friction_compensation=manual_fc,
+        auto_fc_gain=1.05,
+        auto_fc_floor=0.5,
+        friction_blend_error_low=0.05,
+        friction_blend_error_high=0.2,
+    )
+
+    base_breakaway = motor.static_friction * motor.resistance / motor._kt
+    expected_auto = base_breakaway * 1.05
+    expected_auto = max(expected_auto, 0.5)
+    expected_auto = min(expected_auto, controller.voltage_limit)
+
+    near_error = 0.01
+    assert math.isclose(
+        controller._dynamic_friction_compensation(near_error),
+        expected_auto,
+        rel_tol=1e-6,
+    )
+
+    far_error = 0.3
+    assert math.isclose(
+        controller._dynamic_friction_compensation(far_error),
+        manual_fc,
+        rel_tol=1e-6,
+    )
+
+    mid_error = 0.1
+    alpha = (mid_error - 0.05) / (0.2 - 0.05)
+    expected_mid = (1.0 - alpha) * expected_auto + alpha * manual_fc
+    assert math.isclose(
+        controller._dynamic_friction_compensation(mid_error),
+        expected_mid,
+        rel_tol=1e-6,
+    )
