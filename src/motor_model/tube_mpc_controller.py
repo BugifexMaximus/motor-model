@@ -48,6 +48,8 @@ class TubeMPCController:
         tube_max_iterations: int = 500,
         lqr_state_weight: Sequence[float] = (2.0, 0.2, 5.0),
         lqr_input_weight: float = 0.5,
+        integral_gain: float = 0.05,
+        integral_limit: float = 5.0,
     ) -> None:
         if dt <= 0:
             raise ValueError("dt must be positive")
@@ -77,6 +79,10 @@ class TubeMPCController:
             raise ValueError("lqr_state_weight must contain three entries")
         if lqr_input_weight <= 0.0:
             raise ValueError("lqr_input_weight must be positive")
+        if integral_gain < 0.0:
+            raise ValueError("integral_gain must be non-negative")
+        if integral_limit <= 0.0:
+            raise ValueError("integral_limit must be positive")
 
         self.dt = dt
         self.horizon = horizon
@@ -93,6 +99,8 @@ class TubeMPCController:
         self._tube_max_iterations = tube_max_iterations
         self._lqr_state_weight = tuple(float(value) for value in lqr_state_weight)
         self._lqr_input_weight = float(lqr_input_weight)
+        self._integral_gain = float(integral_gain)
+        self._integral_limit = float(integral_limit)
 
         self._candidate_count = candidate_count
         self._user_friction_compensation = friction_compensation
@@ -103,6 +111,7 @@ class TubeMPCController:
         self._last_nominal_voltage: float | None = None
         self._last_measured_position: float | None = None
         self._last_measurement_time: float | None = None
+        self._position_integral: float = 0.0
 
         self._motor: BrushedMotorModel | None = None
         self._linearization_motor: BrushedMotorModel | None = None
@@ -154,6 +163,7 @@ class TubeMPCController:
         self._last_nominal_voltage = None
         self._last_measured_position = position
         self._last_measurement_time = None
+        self._position_integral = 0.0
 
     def update(self, *, time: float, measurement: float) -> float:
         if self._motor is None:
@@ -209,10 +219,22 @@ class TubeMPCController:
             self._state[1] - self._nominal_state[1],
             self._state[2] - self._nominal_state[2],
         )
-        feedback_voltage = sum(k * e for k, e in zip(self._K, error))
-        control_voltage = _clamp_symmetric(nominal_voltage + feedback_voltage, self.voltage_limit)
-
         position_error = self.target_lvdt - normalized_measurement
+        self._position_integral = _clamp_symmetric(
+            self._position_integral + position_error, self._integral_limit
+        )
+        integral_voltage = self._integral_gain * self._position_integral
+
+        feedback_voltage = sum(k * e for k, e in zip(self._K, error))
+
+        effective_limit = self._tightened_voltage_limit
+        if effective_limit <= 0.0 or effective_limit > self.voltage_limit:
+            effective_limit = self.voltage_limit
+
+        control_voltage = _clamp_symmetric(
+            nominal_voltage + feedback_voltage + integral_voltage,
+            effective_limit,
+        )
         if (
             abs(self._state[1]) < self._motor.stop_speed_threshold
             and abs(position_error) > self.position_tolerance
@@ -220,7 +242,7 @@ class TubeMPCController:
         ):
             direction = 1.0 if position_error >= 0.0 else -1.0
             control_voltage = direction * self.friction_compensation
-            control_voltage = _clamp_symmetric(control_voltage, self.voltage_limit)
+            control_voltage = _clamp_symmetric(control_voltage, effective_limit)
 
         self._last_control = control_voltage
         self._last_nominal_voltage = nominal_voltage
@@ -299,11 +321,20 @@ class TubeMPCController:
     def _compute_error_bounds(
         self, motor: BrushedMotorModel
     ) -> Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]:
-        max_current = self.voltage_limit / motor.resistance
-        current_bounds = (-2.0 * max_current, 2.0 * max_current)
+        resistance = max(motor.resistance, 1e-9)
+        max_current = self.voltage_limit / resistance
+        friction_current = self.friction_compensation / resistance
+        current_margin = 0.5 * max_current
+        if friction_current > current_margin:
+            current_margin = min(max_current, 1.2 * friction_current)
+        current_bounds = (-current_margin, current_margin)
+
         max_speed = motor.kv * self.voltage_limit
-        speed_bounds = (-2.0 * max_speed, 2.0 * max_speed)
-        position_bounds = (-motor.lvdt_full_scale, motor.lvdt_full_scale)
+        speed_margin = 0.5 * max_speed
+        speed_bounds = (-speed_margin, speed_margin)
+
+        position_margin = 0.5 * motor.lvdt_full_scale
+        position_bounds = (-position_margin, position_margin)
         return (current_bounds, speed_bounds, position_bounds)
 
     def _compute_feedback_and_tube(self) -> None:
@@ -635,20 +666,66 @@ class TubeMPCController:
             max_value += max(candidates)
         delta = max(abs(min_value), abs(max_value))
         tightened = max(0.0, self.voltage_limit - delta)
+        minimum_limit = 0.2 * self.voltage_limit
+        if tightened < minimum_limit:
+            tightened = minimum_limit
+        tightened = min(tightened, self.voltage_limit)
         return tightened
 
     def _build_voltage_candidates(self, limit: float) -> Tuple[float, ...]:
         if limit <= 0.0:
             return (0.0,)
 
-        half = self._candidate_count // 2
-        step = limit / half
-        values = {0.0}
-        for index in range(1, half + 1):
-            voltage = index * step
-            values.add(min(voltage, limit))
-            values.add(max(-voltage, -limit))
-        return tuple(sorted(values))
+        levels = {0.0}
+
+        fc = min(self.friction_compensation, limit)
+        if fc > 0.0:
+            levels.add(fc)
+            levels.add(-fc)
+
+        remaining = max(0, self._candidate_count - len(levels))
+        if remaining > 0:
+            half = remaining // 2
+            step = limit / (2.0 * half) if half > 0 else limit
+            for i in range(1, half + 1):
+                voltage = i * step
+                if voltage >= limit:
+                    voltage = limit
+                levels.add(voltage)
+                levels.add(-voltage)
+
+        if limit > 0.0 and limit not in levels:
+            if len(levels) + 2 <= self._candidate_count:
+                levels.add(limit)
+                levels.add(-limit)
+            else:
+                removable = sorted(
+                    value
+                    for value in levels
+                    if value > 0.0 and (fc <= 0.0 or abs(value - fc) > 1e-9)
+                )
+                if removable:
+                    value = removable[-1]
+                    levels.discard(value)
+                    levels.discard(-value)
+                    levels.add(limit)
+                    levels.add(-limit)
+
+        while len(levels) > self._candidate_count:
+            positive_candidates = sorted(
+                value
+                for value in levels
+                if value > 0.0
+                and abs(value - limit) > 1e-9
+                and (fc <= 0.0 or abs(value - fc) > 1e-9)
+            )
+            if not positive_candidates:
+                break
+            value = positive_candidates[-1]
+            levels.discard(value)
+            levels.discard(-value)
+
+        return tuple(sorted(levels))
 
     def _compute_nominal_position_bounds(
         self,
