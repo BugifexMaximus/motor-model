@@ -7,8 +7,9 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, Tuple, Literal
 
-from .brushed_motor import BrushedMotorModel
-from .mpc_controller import LVDTMPCController, MPCWeights
+from ._mpc_common import MPCWeights
+from .brushed_motor import BrushedMotorModel, rpm_per_volt_to_rad_per_sec_per_volt
+from .mpc_controller import LVDTMPCController
 from .tube_mpc_controller import TubeMPCController
 
 ControllerName = Literal["lvdtnom", "tube"]
@@ -79,6 +80,7 @@ class MotorSimulation:
 
         self.history_duration = history_duration
         self.max_points = max_points
+        self._history_max_points = max_points
         self._controller_type: ControllerName = controller_type
         self.reset()
 
@@ -100,10 +102,22 @@ class MotorSimulation:
             controller_motor, weights=weights, **controller_kwargs
         )
 
-        substeps = max(1, controller_kwargs.get("internal_substeps", 1))
+        substeps = max(
+            1,
+            getattr(
+                self.controller,
+                "internal_substeps",
+                controller_kwargs.get("internal_substeps", 1),
+            ),
+        )
+        self.motor.integration_substeps = substeps
+        controller_motor.integration_substeps = substeps
         self.plant_dt = self.controller.dt / substeps
         self.measurement_steps = max(1, int(round(self.controller.dt / self.plant_dt)))
         self._steps_since_measurement = 0
+
+        required_points = max(2, int(math.ceil(self.history_duration / self.plant_dt)) + 1)
+        self._history_max_points = max(self.max_points, required_points)
 
         self.time = 0.0
         self.current = 0.0
@@ -118,12 +132,12 @@ class MotorSimulation:
         )
         self.voltage = self.controller.update(time=0.0, measurement=initial_measurement)
 
-        self.time_history: Deque[float] = deque([0.0], maxlen=self.max_points)
-        self.position_history: Deque[float] = deque([self.position], maxlen=self.max_points)
-        self.setpoint_history: Deque[float] = deque([self.target_position()], maxlen=self.max_points)
-        self.voltage_history: Deque[float] = deque([self.voltage], maxlen=self.max_points)
-        self.speed_history: Deque[float] = deque([self.speed], maxlen=self.max_points)
-        self.current_history: Deque[float] = deque([self.current], maxlen=self.max_points)
+        self.time_history: Deque[float] = deque([0.0], maxlen=self._history_max_points)
+        self.position_history: Deque[float] = deque([self.position], maxlen=self._history_max_points)
+        self.setpoint_history: Deque[float] = deque([self.target_position()], maxlen=self._history_max_points)
+        self.voltage_history: Deque[float] = deque([self.voltage], maxlen=self._history_max_points)
+        self.speed_history: Deque[float] = deque([self.speed], maxlen=self._history_max_points)
+        self.current_history: Deque[float] = deque([self.current], maxlen=self._history_max_points)
 
     # ------------------------------------------------------------------
     # Public API used by the GUI and the unit tests
@@ -237,13 +251,13 @@ def build_default_motor_kwargs(**overrides: float) -> Dict[str, float]:
     kwargs: Dict[str, float] = {
         "resistance": 28.0,
         "inductance": 16e-3,
-        "kv": 7.0,
-        "inertia": 5e-5,
-        "viscous_friction": 2e-5,
-        "coulomb_friction": 2.2e-3,
-        "static_friction": 2.5e-3,
+        "kv": rpm_per_volt_to_rad_per_sec_per_volt(7.0),
+        "inertia": 4.8e-4,
+        "viscous_friction": 1.9e-4,
+        "coulomb_friction": 2.1e-2,
+        "static_friction": 2.4e-2,
         "stop_speed_threshold": 1e-4,
-        "spring_constant": 1e-4,
+        "spring_constant": 9.5e-4,
         "spring_compression_ratio": 0.4,
         "lvdt_full_scale": math.radians(30.0),
         "lvdt_noise_std": 0.0,
@@ -263,7 +277,7 @@ def build_default_controller_kwargs(**overrides: float) -> Dict[str, float]:
         "candidate_count": 5,
         "position_tolerance": 0.02,
         "static_friction_penalty": 50.0,
-        "internal_substeps": 5,
+        "internal_substeps": 15,
         "weights": MPCWeights(),
     }
     kwargs.update(overrides)
@@ -281,7 +295,7 @@ def build_default_tube_controller_kwargs(**overrides: float) -> Dict[str, float]
         "candidate_count": 5,
         "position_tolerance": 0.02,
         "static_friction_penalty": 50.0,
-        "internal_substeps": 5,
+        "internal_substeps": 15,
         "inductance_rel_uncertainty": 0.5,
         "tube_tolerance": 1e-6,
         "tube_max_iterations": 500,

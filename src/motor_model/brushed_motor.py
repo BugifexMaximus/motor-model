@@ -7,6 +7,21 @@ import random
 from dataclasses import dataclass
 from typing import List, Protocol
 
+RPM_PER_VOLT_TO_RAD_PER_SEC_PER_VOLT = 2.0 * math.pi / 60.0
+RAD_PER_SEC_PER_VOLT_TO_RPM_PER_VOLT = 60.0 / (2.0 * math.pi)
+
+
+def rpm_per_volt_to_rad_per_sec_per_volt(value: float) -> float:
+    """Convert a speed constant expressed in RPM/V into SI units."""
+
+    return value * RPM_PER_VOLT_TO_RAD_PER_SEC_PER_VOLT
+
+
+def rad_per_sec_per_volt_to_rpm_per_volt(value: float) -> float:
+    """Convert a speed constant expressed in rad/s/V into RPM/V."""
+
+    return value * RAD_PER_SEC_PER_VOLT_TO_RPM_PER_VOLT
+
 
 class VoltageSource(Protocol):
     """Protocol for time-dependent voltage sources used in simulations."""
@@ -73,6 +88,20 @@ class BrushedMotorModel:
     stop_speed_threshold: float
         Speed (rad/s) below which the rotor is considered stationary for
         static-friction logic.
+    spring_constant: float
+        Torsional spring constant (N*m/rad) coupling the rotor to ground.
+    spring_compression_ratio: float
+        Ratio controlling the spring preload applied at zero position.
+    lvdt_full_scale: float
+        Maximum measurable angle (in radians) for the simulated LVDT sensor.
+    lvdt_noise_std: float
+        Standard deviation of the Gaussian noise applied to LVDT readings
+        during :meth:`simulate`. Set to ``0`` to disable measurement noise.
+    integration_substeps: int
+        Number of internal integration slices stored on the model. External
+        simulators can mirror this value to align their integration grids.
+    rng: random.Random | None
+        Optional pseudo-random generator used for reproducible noise samples.
     """
 
     def __init__(
@@ -80,7 +109,7 @@ class BrushedMotorModel:
         *,
         resistance: float = 28.0,
         inductance: float = 16e-3,
-        kv: float = 7.0 * 2.0 * math.pi / 60.0,
+        kv: float = rpm_per_volt_to_rad_per_sec_per_volt(7.0),
         inertia: float = 4.8e-4,
         viscous_friction: float = 1.9e-4,
         coulomb_friction: float = 2.1e-2,
@@ -90,6 +119,7 @@ class BrushedMotorModel:
         spring_compression_ratio: float = 0.4,
         lvdt_full_scale: float = 0.1,
         lvdt_noise_std: float = 5e-3,
+        integration_substeps: int = 1,
         rng: random.Random | None = None,
     ) -> None:
         if kv <= 0:
@@ -108,6 +138,8 @@ class BrushedMotorModel:
             raise ValueError("lvdt_full_scale must be positive")
         if lvdt_noise_std < 0:
             raise ValueError("lvdt_noise_std must be non-negative")
+        if integration_substeps <= 0:
+            raise ValueError("integration_substeps must be positive")
 
         self.resistance = resistance
         self.inductance = inductance
@@ -122,10 +154,17 @@ class BrushedMotorModel:
         self.lvdt_full_scale = lvdt_full_scale
         self.lvdt_noise_std = lvdt_noise_std
         self._rng = rng or random.Random()
+        self.integration_substeps = integration_substeps
 
         # Electrical constant ke and torque constant kt in SI units.
         self._ke = 1.0 / kv
         self._kt = 1.0 / kv
+
+    @property
+    def speed_constant_rpm_per_volt(self) -> float:
+        """Return the motor speed constant expressed in RPM per Volt."""
+
+        return rad_per_sec_per_volt_to_rpm_per_volt(self.kv)
 
     @staticmethod
     def _sign(value: float) -> float:

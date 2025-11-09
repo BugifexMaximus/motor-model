@@ -11,6 +11,10 @@ from PyQt5 import QtCore, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
+from motor_model.brushed_motor import (
+    rad_per_sec_per_volt_to_rpm_per_volt,
+    rpm_per_volt_to_rad_per_sec_per_volt,
+)
 from motor_model.mpc_controller import MPCWeights
 from motor_model.mpc_simulation import (
     MotorSimulation,
@@ -96,7 +100,12 @@ class ControllerDemo(QtWidgets.QMainWindow):
             "resistance": DoubleParamConfig("Resistance [Ω]", 1.0, 100.0, 0.1, 2, defaults["resistance"]),
             "inductance": DoubleParamConfig("Inductance [H]", 1e-4, 0.2, 1e-4, 6, defaults["inductance"]),
             "kv": DoubleParamConfig(
-                "Speed constant [rad/s/V]", 0.1, 200.0, 0.1, 2, defaults["kv"]
+                "Speed constant [RPM/V]",
+                0.1,
+                600.0,
+                0.1,
+                2,
+                rad_per_sec_per_volt_to_rpm_per_volt(defaults["kv"]),
             ),
             "inertia": DoubleParamConfig("Inertia [kg·m²]", 1e-7, 1e-2, 1e-7, 7, defaults["inertia"]),
             "viscous_friction": DoubleParamConfig(
@@ -349,7 +358,9 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        substeps_spin = self._create_int_spin(1, 10, 1, int(defaults["internal_substeps"]))
+        substeps_spin = self._create_int_spin(
+            1, 50, 1, int(defaults["internal_substeps"])
+        )
         form.addRow("Internal substeps", substeps_spin)
         controls["internal_substeps"] = substeps_spin
 
@@ -386,7 +397,9 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        substeps_spin = self._create_int_spin(1, 10, 1, int(defaults["internal_substeps"]))
+        substeps_spin = self._create_int_spin(
+            1, 50, 1, int(defaults["internal_substeps"])
+        )
         form.addRow("Internal substeps", substeps_spin)
         controls["internal_substeps"] = substeps_spin
 
@@ -544,13 +557,19 @@ class ControllerDemo(QtWidgets.QMainWindow):
         if self._setup_in_progress:
             return
 
-        motor_kwargs = {
-            name: float(control.value()) for name, control in self.motor_controls.items()
-        }
-        controller_motor_kwargs = {
-            name: float(control.value())
-            for name, control in self.controller_model_controls.items()
-        }
+        motor_kwargs = {}
+        for name, control in self.motor_controls.items():
+            value = float(control.value())
+            if name == "kv":
+                value = rpm_per_volt_to_rad_per_sec_per_volt(value)
+            motor_kwargs[name] = value
+
+        controller_motor_kwargs = {}
+        for name, control in self.controller_model_controls.items():
+            value = float(control.value())
+            if name == "kv":
+                value = rpm_per_volt_to_rad_per_sec_per_volt(value)
+            controller_motor_kwargs[name] = value
 
         controller_type = self._current_controller_type()
         controller_kwargs = self._controller_kwargs_for_type(controller_type)
