@@ -7,12 +7,14 @@ from .brushed_motor import (
     rad_per_sec_per_volt_to_rpm_per_volt,
     rpm_per_volt_to_rad_per_sec_per_volt,
 )
+from .continuous_mpc_controller import ContMPCController
 from .mpc_controller import LVDTMPCController, TubeMPCController
 from .mpc_simulation import (
     MotorSimulation,
     SimulationHistory,
     SimulationState,
     build_default_controller_kwargs,
+    build_default_continuous_controller_kwargs,
     build_default_tube_controller_kwargs,
     build_default_motor_kwargs,
 )
@@ -22,6 +24,7 @@ __all__ = [
     "SimulationResult",
     "LVDTMPCController",
     "TubeMPCController",
+    "ContMPCController",
     "MPCWeights",
     "MotorSimulation",
     "SimulationHistory",
@@ -29,6 +32,7 @@ __all__ = [
     "rad_per_sec_per_volt_to_rpm_per_volt",
     "rpm_per_volt_to_rad_per_sec_per_volt",
     "build_default_controller_kwargs",
+    "build_default_continuous_controller_kwargs",
     "build_default_tube_controller_kwargs",
     "build_default_motor_kwargs",
 ]

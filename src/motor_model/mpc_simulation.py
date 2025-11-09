@@ -9,14 +9,16 @@ from typing import Deque, Dict, Tuple, Literal
 
 from ._mpc_common import MPCWeights
 from .brushed_motor import BrushedMotorModel, rpm_per_volt_to_rad_per_sec_per_volt
+from .continuous_mpc_controller import ContMPCController
 from .mpc_controller import LVDTMPCController
 from .tube_mpc_controller import TubeMPCController
 
-ControllerName = Literal["lvdtnom", "tube"]
+ControllerName = Literal["lvdtnom", "tube", "continuous"]
 
 _CONTROLLER_CLASSES = {
     "lvdtnom": LVDTMPCController,
     "tube": TubeMPCController,
+    "continuous": ContMPCController,
 }
 
 
@@ -289,6 +291,31 @@ def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
     return kwargs
 
 
+def build_default_continuous_controller_kwargs(**overrides: object) -> Dict[str, object]:
+    """Return ``ContMPCController`` kwargs paired with the defaults above."""
+
+    kwargs: Dict[str, object] = {
+        "dt": 0.005,
+        "horizon": 4,
+        "voltage_limit": 10.0,
+        "target_lvdt": 0.0,
+        "position_tolerance": 0.02,
+        "static_friction_penalty": 50.0,
+        "internal_substeps": 15,
+        "weights": MPCWeights(),
+        "auto_fc_gain": 1.1,
+        "auto_fc_floor": 0.0,
+        "auto_fc_cap": None,
+        "friction_blend_error_low": 0.05,
+        "friction_blend_error_high": 0.2,
+        "opt_iters": 4,
+        "opt_step": 0.3,
+        "opt_eps": 0.5,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 def build_default_tube_controller_kwargs(**overrides: object) -> Dict[str, object]:
     """Return ``TubeMPCController`` kwargs paired with the defaults above."""
 
@@ -319,6 +346,7 @@ __all__ = [
     "SimulationState",
     "SimulationHistory",
     "build_default_controller_kwargs",
+    "build_default_continuous_controller_kwargs",
     "build_default_tube_controller_kwargs",
     "build_default_motor_kwargs",
 ]
