@@ -7,6 +7,7 @@ from .mpc_simulation import (
     SimulationHistory,
     SimulationState,
     build_default_controller_kwargs,
+    build_default_tube_controller_kwargs,
     build_default_motor_kwargs,
 )
 
@@ -20,5 +21,6 @@ __all__ = [
     "SimulationHistory",
     "SimulationState",
     "build_default_controller_kwargs",
+    "build_default_tube_controller_kwargs",
     "build_default_motor_kwargs",
 ]

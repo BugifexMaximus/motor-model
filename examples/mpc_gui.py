@@ -1,11 +1,11 @@
-"""Interactive GUI for exploring the LVDT-based MPC motor controller."""
+"""Interactive GUI for exploring the motor MPC controllers."""
 
 from __future__ import annotations
 
 import math
 import sys
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, cast
 
 from PyQt5 import QtCore, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -15,6 +15,7 @@ from motor_model.mpc_controller import MPCWeights
 from motor_model.mpc_simulation import (
     MotorSimulation,
     build_default_controller_kwargs,
+    build_default_tube_controller_kwargs,
     build_default_motor_kwargs,
 )
 
@@ -142,6 +143,40 @@ class ControllerDemo(QtWidgets.QMainWindow):
         storage[name] = spin
         form.addRow(config.label, spin)
 
+    def _create_double_spin(
+        self,
+        minimum: float,
+        maximum: float,
+        step: float,
+        decimals: int,
+        value: float,
+        *,
+        suffix: str = "",
+    ) -> QtWidgets.QDoubleSpinBox:
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setDecimals(decimals)
+        spin.setRange(minimum, maximum)
+        spin.setSingleStep(step)
+        spin.setValue(value)
+        if suffix:
+            spin.setSuffix(suffix)
+        spin.valueChanged.connect(self._on_parameters_changed)
+        return spin
+
+    def _create_int_spin(
+        self,
+        minimum: int,
+        maximum: int,
+        step: int,
+        value: int,
+    ) -> QtWidgets.QSpinBox:
+        spin = QtWidgets.QSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setSingleStep(step)
+        spin.setValue(value)
+        spin.valueChanged.connect(self._on_parameters_changed)
+        return spin
+
     def _create_target_section(self) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox("Target")
         layout = QtWidgets.QFormLayout(box)
@@ -185,70 +220,40 @@ class ControllerDemo(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(box)
 
         algorithm_box = QtWidgets.QGroupBox("Algorithm tuning")
-        algorithm_form = QtWidgets.QFormLayout(algorithm_box)
+        algorithm_layout = QtWidgets.QVBoxLayout(algorithm_box)
         layout.addWidget(algorithm_box)
 
-        self.controller_controls: Dict[str, QtWidgets.QWidget] = {}
+        self.controller_type_combo = QtWidgets.QComboBox()
+        self.controller_type_combo.addItem("LVDT MPC", "lvdtnom")
+        self.controller_type_combo.addItem("Tube MPC", "tube")
+        self.controller_type_combo.currentIndexChanged.connect(
+            self._on_controller_type_changed
+        )
+        algorithm_layout.addWidget(self.controller_type_combo)
 
-        defaults = build_default_controller_kwargs()
+        self.controller_stack = QtWidgets.QStackedWidget()
+        algorithm_layout.addWidget(self.controller_stack)
 
-        dt_spin = QtWidgets.QDoubleSpinBox()
-        dt_spin.setDecimals(5)
-        dt_spin.setRange(1e-4, 0.1)
-        dt_spin.setSingleStep(1e-4)
-        dt_spin.setValue(defaults["dt"])
-        dt_spin.valueChanged.connect(self._on_parameters_changed)
-        algorithm_form.addRow("Controller dt [s]", dt_spin)
-        self.controller_controls["dt"] = dt_spin
+        self.controller_controls_by_type: Dict[str, Dict[str, QtWidgets.QWidget]] = {}
+        self._controller_stack_indices: Dict[str, int] = {}
 
-        horizon_spin = QtWidgets.QSpinBox()
-        horizon_spin.setRange(1, 12)
-        horizon_spin.setValue(int(defaults["horizon"]))
-        horizon_spin.valueChanged.connect(self._on_parameters_changed)
-        algorithm_form.addRow("Horizon", horizon_spin)
-        self.controller_controls["horizon"] = horizon_spin
+        lvd_defaults = build_default_controller_kwargs()
+        lvd_widget, lvd_controls = self._build_lvd_controller_controls(lvd_defaults)
+        self.controller_controls_by_type["lvdtnom"] = lvd_controls
+        self._controller_stack_indices["lvdtnom"] = self.controller_stack.addWidget(
+            lvd_widget
+        )
 
-        voltage_spin = QtWidgets.QDoubleSpinBox()
-        voltage_spin.setDecimals(2)
-        voltage_spin.setRange(1.0, 60.0)
-        voltage_spin.setSingleStep(0.5)
-        voltage_spin.setValue(defaults["voltage_limit"])
-        voltage_spin.valueChanged.connect(self._on_parameters_changed)
-        algorithm_form.addRow("Voltage limit [V]", voltage_spin)
-        self.controller_controls["voltage_limit"] = voltage_spin
+        tube_defaults = build_default_tube_controller_kwargs()
+        tube_widget, tube_controls = self._build_tube_controller_controls(tube_defaults)
+        self.controller_controls_by_type["tube"] = tube_controls
+        self._controller_stack_indices["tube"] = self.controller_stack.addWidget(
+            tube_widget
+        )
 
-        candidate_spin = QtWidgets.QSpinBox()
-        candidate_spin.setRange(3, 15)
-        candidate_spin.setSingleStep(2)
-        candidate_spin.setValue(int(defaults["candidate_count"]))
-        candidate_spin.valueChanged.connect(self._on_parameters_changed)
-        algorithm_form.addRow("Candidate count", candidate_spin)
-        self.controller_controls["candidate_count"] = candidate_spin
-
-        tolerance_spin = QtWidgets.QDoubleSpinBox()
-        tolerance_spin.setDecimals(3)
-        tolerance_spin.setRange(0.0, 0.5)
-        tolerance_spin.setSingleStep(0.005)
-        tolerance_spin.setValue(defaults["position_tolerance"])
-        tolerance_spin.valueChanged.connect(self._on_parameters_changed)
-        algorithm_form.addRow("Position tolerance", tolerance_spin)
-        self.controller_controls["position_tolerance"] = tolerance_spin
-
-        penalty_spin = QtWidgets.QDoubleSpinBox()
-        penalty_spin.setDecimals(2)
-        penalty_spin.setRange(0.0, 1000.0)
-        penalty_spin.setSingleStep(1.0)
-        penalty_spin.setValue(defaults["static_friction_penalty"])
-        penalty_spin.valueChanged.connect(self._on_parameters_changed)
-        algorithm_form.addRow("Static friction penalty", penalty_spin)
-        self.controller_controls["static_friction_penalty"] = penalty_spin
-
-        substeps_spin = QtWidgets.QSpinBox()
-        substeps_spin.setRange(1, 10)
-        substeps_spin.setValue(int(defaults["internal_substeps"]))
-        substeps_spin.valueChanged.connect(self._on_parameters_changed)
-        algorithm_form.addRow("Internal substeps", substeps_spin)
-        self.controller_controls["internal_substeps"] = substeps_spin
+        self.controller_stack.setCurrentIndex(
+            self._controller_stack_indices[self._current_controller_type()]
+        )
 
         self.auto_friction_check = QtWidgets.QCheckBox("Automatic friction compensation")
         self.auto_friction_check.setChecked(True)
@@ -313,6 +318,141 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         return box
 
+    def _build_lvd_controller_controls(
+        self, defaults: Dict[str, float]
+    ) -> tuple[QtWidgets.QWidget, Dict[str, QtWidgets.QWidget]]:
+        widget = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(widget)
+        controls: Dict[str, QtWidgets.QWidget] = {}
+
+        dt_spin = self._create_double_spin(1e-4, 0.1, 1e-4, 5, defaults["dt"])
+        form.addRow("Controller dt [s]", dt_spin)
+        controls["dt"] = dt_spin
+
+        horizon_spin = self._create_int_spin(1, 12, 1, int(defaults["horizon"]))
+        form.addRow("Horizon", horizon_spin)
+        controls["horizon"] = horizon_spin
+
+        voltage_spin = self._create_double_spin(1.0, 60.0, 0.5, 2, defaults["voltage_limit"])
+        form.addRow("Voltage limit [V]", voltage_spin)
+        controls["voltage_limit"] = voltage_spin
+
+        candidate_spin = self._create_int_spin(3, 15, 2, int(defaults["candidate_count"]))
+        form.addRow("Candidate count", candidate_spin)
+        controls["candidate_count"] = candidate_spin
+
+        tolerance_spin = self._create_double_spin(0.0, 0.5, 0.005, 3, defaults["position_tolerance"])
+        form.addRow("Position tolerance", tolerance_spin)
+        controls["position_tolerance"] = tolerance_spin
+
+        penalty_spin = self._create_double_spin(0.0, 1000.0, 1.0, 2, defaults["static_friction_penalty"])
+        form.addRow("Static friction penalty", penalty_spin)
+        controls["static_friction_penalty"] = penalty_spin
+
+        substeps_spin = self._create_int_spin(1, 10, 1, int(defaults["internal_substeps"]))
+        form.addRow("Internal substeps", substeps_spin)
+        controls["internal_substeps"] = substeps_spin
+
+        return widget, controls
+
+    def _build_tube_controller_controls(
+        self, defaults: Dict[str, float]
+    ) -> tuple[QtWidgets.QWidget, Dict[str, QtWidgets.QWidget]]:
+        widget = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(widget)
+        controls: Dict[str, QtWidgets.QWidget] = {}
+
+        dt_spin = self._create_double_spin(1e-4, 0.1, 1e-4, 5, defaults["dt"])
+        form.addRow("Controller dt [s]", dt_spin)
+        controls["dt"] = dt_spin
+
+        horizon_spin = self._create_int_spin(1, 12, 1, int(defaults["horizon"]))
+        form.addRow("Horizon", horizon_spin)
+        controls["horizon"] = horizon_spin
+
+        voltage_spin = self._create_double_spin(1.0, 60.0, 0.5, 2, defaults["voltage_limit"])
+        form.addRow("Voltage limit [V]", voltage_spin)
+        controls["voltage_limit"] = voltage_spin
+
+        candidate_spin = self._create_int_spin(3, 15, 2, int(defaults["candidate_count"]))
+        form.addRow("Candidate count", candidate_spin)
+        controls["candidate_count"] = candidate_spin
+
+        tolerance_spin = self._create_double_spin(0.0, 0.5, 0.005, 3, defaults["position_tolerance"])
+        form.addRow("Position tolerance", tolerance_spin)
+        controls["position_tolerance"] = tolerance_spin
+
+        penalty_spin = self._create_double_spin(0.0, 1000.0, 1.0, 2, defaults["static_friction_penalty"])
+        form.addRow("Static friction penalty", penalty_spin)
+        controls["static_friction_penalty"] = penalty_spin
+
+        substeps_spin = self._create_int_spin(1, 10, 1, int(defaults["internal_substeps"]))
+        form.addRow("Internal substeps", substeps_spin)
+        controls["internal_substeps"] = substeps_spin
+
+        inductance_spin = self._create_double_spin(
+            0.0,
+            2.0,
+            0.05,
+            2,
+            defaults["inductance_rel_uncertainty"],
+        )
+        form.addRow("Inductance relative uncertainty", inductance_spin)
+        controls["inductance_rel_uncertainty"] = inductance_spin
+
+        tube_tol_spin = self._create_double_spin(
+            1e-8,
+            1e-2,
+            1e-6,
+            8,
+            defaults["tube_tolerance"],
+        )
+        form.addRow("Tube tolerance", tube_tol_spin)
+        controls["tube_tolerance"] = tube_tol_spin
+
+        tube_iter_spin = self._create_int_spin(10, 5000, 10, int(defaults["tube_max_iterations"]))
+        form.addRow("Tube max iterations", tube_iter_spin)
+        controls["tube_max_iterations"] = tube_iter_spin
+
+        lqr_current_spin = self._create_double_spin(0.0, 50.0, 0.1, 2, defaults["lqr_state_weight"][0])
+        form.addRow("LQR weight (current)", lqr_current_spin)
+        controls["lqr_state_weight_current"] = lqr_current_spin
+
+        lqr_speed_spin = self._create_double_spin(0.0, 50.0, 0.1, 2, defaults["lqr_state_weight"][1])
+        form.addRow("LQR weight (speed)", lqr_speed_spin)
+        controls["lqr_state_weight_speed"] = lqr_speed_spin
+
+        lqr_position_spin = self._create_double_spin(
+            0.0,
+            50.0,
+            0.1,
+            2,
+            defaults["lqr_state_weight"][2],
+        )
+        form.addRow("LQR weight (position)", lqr_position_spin)
+        controls["lqr_state_weight_position"] = lqr_position_spin
+
+        lqr_input_spin = self._create_double_spin(0.01, 10.0, 0.01, 2, defaults["lqr_input_weight"])
+        form.addRow("LQR input weight", lqr_input_spin)
+        controls["lqr_input_weight"] = lqr_input_spin
+
+        return widget, controls
+
+    def _current_controller_type(self) -> str:
+        data = self.controller_type_combo.currentData() if hasattr(self, "controller_type_combo") else None
+        if not data:
+            return "lvdtnom"
+        return str(data)
+
+    def _on_controller_type_changed(self, index: int) -> None:  # noqa: ARG002
+        if self._setup_in_progress:
+            return
+        controller_type = self._current_controller_type()
+        self.controller_stack.setCurrentIndex(
+            self._controller_stack_indices[controller_type]
+        )
+        self.reset_simulation()
+
     def _create_status_section(self) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox("Live status")
         layout = QtWidgets.QFormLayout(box)
@@ -334,6 +474,72 @@ class ControllerDemo(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------
     # Simulation handling
     # ------------------------------------------------------------------
+    def _controller_kwargs_for_type(self, controller_type: str) -> Dict[str, float]:
+        controls = self.controller_controls_by_type[controller_type]
+
+        kwargs: Dict[str, float] = {
+            "dt": float(cast(QtWidgets.QDoubleSpinBox, controls["dt"]).value()),
+            "horizon": int(cast(QtWidgets.QSpinBox, controls["horizon"]).value()),
+            "voltage_limit": float(
+                cast(QtWidgets.QDoubleSpinBox, controls["voltage_limit"]).value()
+            ),
+            "candidate_count": int(
+                cast(QtWidgets.QSpinBox, controls["candidate_count"]).value()
+            ),
+            "position_tolerance": float(
+                cast(QtWidgets.QDoubleSpinBox, controls["position_tolerance"]).value()
+            ),
+            "static_friction_penalty": float(
+                cast(QtWidgets.QDoubleSpinBox, controls["static_friction_penalty"]).value()
+            ),
+            "internal_substeps": int(
+                cast(QtWidgets.QSpinBox, controls["internal_substeps"]).value()
+            ),
+        }
+
+        if controller_type == "tube":
+            kwargs.update(
+                {
+                    "inductance_rel_uncertainty": float(
+                        cast(
+                            QtWidgets.QDoubleSpinBox,
+                            controls["inductance_rel_uncertainty"],
+                        ).value()
+                    ),
+                    "tube_tolerance": float(
+                        cast(QtWidgets.QDoubleSpinBox, controls["tube_tolerance"]).value()
+                    ),
+                    "tube_max_iterations": int(
+                        cast(QtWidgets.QSpinBox, controls["tube_max_iterations"]).value()
+                    ),
+                    "lqr_state_weight": (
+                        float(
+                            cast(
+                                QtWidgets.QDoubleSpinBox,
+                                controls["lqr_state_weight_current"],
+                            ).value()
+                        ),
+                        float(
+                            cast(
+                                QtWidgets.QDoubleSpinBox,
+                                controls["lqr_state_weight_speed"],
+                            ).value()
+                        ),
+                        float(
+                            cast(
+                                QtWidgets.QDoubleSpinBox,
+                                controls["lqr_state_weight_position"],
+                            ).value()
+                        ),
+                    ),
+                    "lqr_input_weight": float(
+                        cast(QtWidgets.QDoubleSpinBox, controls["lqr_input_weight"]).value()
+                    ),
+                }
+            )
+
+        return kwargs
+
     def reset_simulation(self) -> None:
         if self._setup_in_progress:
             return
@@ -346,28 +552,22 @@ class ControllerDemo(QtWidgets.QMainWindow):
             for name, control in self.controller_model_controls.items()
         }
 
+        controller_type = self._current_controller_type()
+        controller_kwargs = self._controller_kwargs_for_type(controller_type)
+
         target_position_deg = self.target_spin.value()
         target_position = math.radians(target_position_deg)
         lvdt_scale = motor_kwargs["lvdt_full_scale"]
         target_lvdt = 0.0 if lvdt_scale <= 0 else max(-1.0, min(1.0, target_position / lvdt_scale))
 
-        controller_kwargs: Dict[str, float] = {
-            "dt": float(self.controller_controls["dt"].value()),
-            "horizon": int(self.controller_controls["horizon"].value()),
-            "voltage_limit": float(self.controller_controls["voltage_limit"].value()),
-            "target_lvdt": float(target_lvdt),
-            "candidate_count": int(self.controller_controls["candidate_count"].value()),
-            "position_tolerance": float(self.controller_controls["position_tolerance"].value()),
-            "static_friction_penalty": float(self.controller_controls["static_friction_penalty"].value()),
-            "internal_substeps": int(self.controller_controls["internal_substeps"].value()),
-            "weights": MPCWeights(
-                position=self.weight_controls["position"].value(),
-                speed=self.weight_controls["speed"].value(),
-                voltage=self.weight_controls["voltage"].value(),
-                delta_voltage=self.weight_controls["delta_voltage"].value(),
-                terminal_position=self.weight_controls["terminal_position"].value(),
-            ),
-        }
+        controller_kwargs["target_lvdt"] = float(target_lvdt)
+        controller_kwargs["weights"] = MPCWeights(
+            position=self.weight_controls["position"].value(),
+            speed=self.weight_controls["speed"].value(),
+            voltage=self.weight_controls["voltage"].value(),
+            delta_voltage=self.weight_controls["delta_voltage"].value(),
+            terminal_position=self.weight_controls["terminal_position"].value(),
+        )
 
         if self.auto_friction_check.isChecked():
             controller_kwargs["friction_compensation"] = None
@@ -378,6 +578,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
             motor_kwargs,
             controller_kwargs,
             controller_motor_kwargs=controller_motor_kwargs,
+            controller_type=controller_type,
         )
         self.simulation.set_target_position(target_position)
 

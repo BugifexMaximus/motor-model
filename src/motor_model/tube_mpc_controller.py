@@ -396,7 +396,7 @@ class TubeMPCController:
             At_P_A = _mat_mul(At, P_A)
             At_P_B = _mat_vec_mul(At, P_B)
             correction = _outer_product(At_P_B, Bt_PA)
-            correction = (
+            correction = tuple(
                 tuple(S_inv * value for value in row) for row in correction
             )
             P_next = (
