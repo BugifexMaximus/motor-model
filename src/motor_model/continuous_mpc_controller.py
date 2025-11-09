@@ -1,10 +1,9 @@
-"""Model predictive controller for the brushed motor model."""
+"""Continuous-action MPC controller for the brushed motor model."""
 
 from __future__ import annotations
 
 import math
-from itertools import product
-from typing import Iterable, List, Tuple
+from typing import List, Tuple
 
 from ._mpc_common import (
     MPCWeights,
@@ -15,112 +14,28 @@ from ._mpc_common import (
     _predict_next_state,
 )
 from .brushed_motor import BrushedMotorModel
-from .tube_mpc_controller import TubeMPCController
 
-class LVDTMPCController:
-    """Discrete-time MPC controller using LVDT feedback.
 
-    The controller uses a simplified internal model of the :class:`BrushedMotorModel`
-    to evaluate candidate voltage sequences. The first voltage of the sequence
-    with the lowest predicted cost is applied to the motor, and the optimisation
-    is repeated at the next control step (receding horizon).
-
-    Parameters
-    ----------
-    motor:
-        Instance of :class:`BrushedMotorModel` that provides the physical
-        parameters used to build the internal model.
-    dt:
-        Controller time-step in seconds. This should match the integration step
-        used for the plant simulation.
-    horizon:
-        Number of discrete steps used in the MPC look-ahead window. Larger
-        horizons provide smoother behaviour at the cost of more computations.
-    voltage_limit:
-        Symmetric saturation limit (in Volts) applied to the controller output.
-    target_lvdt:
-        Desired LVDT reading expressed in the normalised range ``[-1, 1]``.
-    candidate_count:
-        Number of discrete voltage levels used during the optimisation. The
-        value must be odd so that a zero control action exists in the grid.
-    weights:
-        Relative weighting applied to the MPC cost function terms.
-    position_tolerance:
-        Position error (normalised LVDT units) regarded as acceptable steady
-        state. Errors inside this band do not trigger the static friction
-        penalty.
-    static_friction_penalty:
-        Additional cost applied to candidate sequences that fail to command a
-        voltage high enough to break static friction when the rotor is stuck
-        outside the position tolerance band.
-    friction_compensation:
-        Minimum absolute voltage command (in Volts) used when the rotor is
-        static and the error exceeds the tolerance. When ``None`` the value is
-        derived from the motor parameters.
-    auto_fc_gain:
-        Multiplicative factor applied to the estimated breakaway voltage when
-        computing the automatic friction compensation.
-    auto_fc_floor:
-        Minimum voltage (in Volts) allowed for the automatic friction
-        compensation estimate.
-    auto_fc_cap:
-        Optional upper bound (in Volts) applied to the automatic friction
-        compensation estimate before clamping to ``voltage_limit``.
-    friction_blend_error_low:
-        Absolute position error (normalised LVDT units) below which the
-        controller uses only the automatic friction compensation estimate.
-    friction_blend_error_high:
-        Absolute position error (normalised LVDT units) above which the
-        controller uses the manual ``friction_compensation`` when supplied.
-        internal_substeps:
-            Number of internal integration slices used by the MPC prediction model
-            within a single controller period. Setting this so that ``dt`` divided
-            by ``internal_substeps`` matches the plant integration step improves
-            model accuracy.
-        robust_electrical:
-            When ``True`` (default) the internal prediction model uses the
-            quasi-static electrical approximation to eliminate inductance
-            sensitivity. Setting it to ``False`` reverts to the inductive
-            integration previously used.
-        electrical_alpha:
-            Optional smoothing factor applied when ``robust_electrical`` is
-            enabled. A value of ``1.0`` snaps the predicted current to the
-            steady-state, whereas smaller values low-pass filter the update.
-            When omitted the controller uses ``1.0``.
-        inductance_rel_uncertainty:
-            Relative inductance spread used to create a min-max ensemble of
-            prediction models. For example ``0.5`` evaluates each candidate
-            sequence on 0.5×, 1× and 1.5× the nominal inductance and minimises
-            the worst-case cost. This setting only affects the controller when
-            ``robust_electrical`` is ``False`` because the quasi-static
-            approximation ignores inductance dynamics.
-        pd_blend:
-            Weight applied to the MPC voltage before blending with the
-            stabilising PD controller (``0`` = pure PD, ``1`` = pure MPC).
-        pd_kp:
-            Proportional gain used by the stabilising PD term.
-        pd_kd:
-            Derivative gain used by the stabilising PD term.
-    """
+class ContMPCController:
+    """Continuous-action MPC controller using LVDT feedback."""
 
     def __init__(
         self,
         motor: BrushedMotorModel,
         *,
         dt: float,
-        horizon: int = 3,
+        horizon: int = 5,
         voltage_limit: float = 10.0,
         target_lvdt: float = 0.0,
-        candidate_count: int = 5,
         weights: MPCWeights | None = None,
         position_tolerance: float = 0.02,
         static_friction_penalty: float = 50.0,
         friction_compensation: float | None = None,
-        auto_fc_gain: float = 1.1,
+        auto_fc_gain: float = 0.4,
         auto_fc_floor: float = 0.0,
         auto_fc_cap: float | None = None,
-        friction_blend_error_low: float = 0.05,
-        friction_blend_error_high: float = 0.2,
+        friction_blend_error_low: float = 0.2,
+        friction_blend_error_high: float = 0.5,
         internal_substeps: int = 30,
         robust_electrical: bool = True,
         electrical_alpha: float | None = None,
@@ -128,6 +43,9 @@ class LVDTMPCController:
         pd_blend: float = 0.7,
         pd_kp: float = 6.0,
         pd_kd: float = 0.4,
+        opt_iters: int = 10,
+        opt_step: float = 0.1,
+        opt_eps: float | None = 0.1,
     ) -> None:
         if dt <= 0:
             raise ValueError("dt must be positive")
@@ -135,8 +53,6 @@ class LVDTMPCController:
             raise ValueError("horizon must be positive")
         if voltage_limit <= 0:
             raise ValueError("voltage_limit must be positive")
-        if candidate_count < 3 or candidate_count % 2 == 0:
-            raise ValueError("candidate_count must be an odd integer >= 3")
         if not -1.0 <= target_lvdt <= 1.0:
             raise ValueError("target_lvdt must be within [-1, 1]")
         if position_tolerance < 0:
@@ -145,10 +61,8 @@ class LVDTMPCController:
             raise ValueError("static_friction_penalty must be non-negative")
         if internal_substeps <= 0:
             raise ValueError("internal_substeps must be positive")
-
-        if electrical_alpha is not None:
-            if not 0.0 <= electrical_alpha <= 1.0:
-                raise ValueError("electrical_alpha must be within [0, 1]")
+        if electrical_alpha is not None and not 0.0 <= electrical_alpha <= 1.0:
+            raise ValueError("electrical_alpha must be within [0, 1]")
         if inductance_rel_uncertainty < 0.0:
             raise ValueError("inductance_rel_uncertainty must be non-negative")
         if not 0.0 <= pd_blend <= 1.0:
@@ -169,6 +83,10 @@ class LVDTMPCController:
             raise ValueError(
                 "friction_blend_error_high must be greater than friction_blend_error_low"
             )
+        if opt_iters <= 0:
+            raise ValueError("opt_iters must be positive")
+        if opt_step <= 0.0:
+            raise ValueError("opt_step must be positive")
 
         self.dt = dt
         self.horizon = horizon
@@ -181,76 +99,63 @@ class LVDTMPCController:
         self.robust_electrical = robust_electrical
         self._electrical_alpha = 1.0 if electrical_alpha is None else electrical_alpha
         self.inductance_rel_uncertainty = inductance_rel_uncertainty
+
         self.pd_blend = pd_blend
         self.pd_kp = pd_kp
         self.pd_kd = pd_kd
+
         self.auto_fc_gain = auto_fc_gain
         self.auto_fc_floor = auto_fc_floor
         self.auto_fc_cap = auto_fc_cap
         self.friction_blend_error_low = friction_blend_error_low
         self.friction_blend_error_high = friction_blend_error_high
 
-        self._candidate_count = candidate_count
-        self._user_friction_compensation_request = friction_compensation
-        self._prediction_models: Tuple[BrushedMotorModel, ...] = tuple()
+        self._opt_iters = opt_iters
+        self._opt_step = opt_step
+        self._opt_eps = opt_eps if opt_eps is not None else 0.05 * voltage_limit
+        if self._opt_eps <= 0.0:
+            raise ValueError("opt_eps must be positive")
+
+        self._user_friction_compensation_request: float | None = friction_compensation
         self._auto_friction_compensation: float = 0.0
         self._active_user_friction_compensation: float | None = None
+        self.friction_compensation: float = 0.0
 
-        self._apply_motor_parameters(motor, friction_compensation)
+        self._motor: BrushedMotorModel | None = None
+        self._prediction_models: Tuple[BrushedMotorModel, ...] = tuple()
 
+        self._u_seq: Tuple[float, ...] = (0.0,) * self.horizon
         self._state: Tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._last_voltage: float | None = None
         self._last_measured_position: float | None = None
         self._last_measurement_time: float | None = None
 
+        self._apply_motor_parameters(motor, friction_compensation)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def adapt_to_motor(
         self,
         motor: BrushedMotorModel,
         *,
-        candidate_count: int | None = None,
         voltage_limit: float | None = None,
         friction_compensation: float | None = None,
     ) -> None:
-        """Update the internal model to match a new motor configuration.
-
-        Parameters
-        ----------
-        motor:
-            Instance describing the new motor parameters to track.
-        candidate_count:
-            Optional number of voltage candidates to use for the optimisation.
-            When omitted the previous value is kept.
-        voltage_limit:
-            Optional new saturation limit for the controller output. When
-            provided the limit is applied before recomputing the candidate set.
-        friction_compensation:
-            Optional manual friction compensation voltage. Passing ``None`` will
-            keep the previous manual value when one was supplied during
-            construction or a prior adaptation. When neither a previous value
-            nor a new one are supplied the controller derives the compensation
-            from the motor parameters.
-
-        Notes
-        -----
-        The controller state (current estimate, speed estimate and position)
-        is left untouched so that callers can manage re-initialisation
-        explicitly when the operating conditions change.
-        """
-
         if voltage_limit is not None:
             if voltage_limit <= 0:
                 raise ValueError("voltage_limit must be positive")
             self.voltage_limit = voltage_limit
 
-        if candidate_count is not None:
-            if candidate_count < 3 or candidate_count % 2 == 0:
-                raise ValueError("candidate_count must be an odd integer >= 3")
-            self._candidate_count = candidate_count
-
         self._apply_motor_parameters(motor, friction_compensation)
 
         if self._last_voltage is not None:
             self._last_voltage = self._clamp_voltage(self._last_voltage)
+
+        if len(self._u_seq) != self.horizon:
+            base = self._last_voltage or 0.0
+            self._u_seq = (base,) * self.horizon
 
     def reset(
         self,
@@ -259,24 +164,27 @@ class LVDTMPCController:
         initial_current: float,
         initial_speed: float,
     ) -> None:
-        """Reset the controller internal state."""
-
         position = self._measurement_to_position(initial_measurement)
         self._state = (initial_current, initial_speed, position)
         self._last_voltage = None
         self._last_measured_position = position
         self._last_measurement_time = None
+        self._u_seq = (0.0,) * self.horizon
 
     def update(self, *, time: float, measurement: float) -> float:
-        """Return the next control action using the latest LVDT measurement."""
+        if self._motor is None:
+            return 0.0
 
-        # Update the internally tracked position with the measured one.
         measured_position = self._measurement_to_position(measurement)
         normalized_measurement = self._position_to_measurement(measured_position)
+
         current, _, _ = self._state
 
         estimated_speed = 0.0
-        if self._last_measured_position is not None and self._last_measurement_time is not None:
+        if (
+            self._last_measured_position is not None
+            and self._last_measurement_time is not None
+        ):
             dt = time - self._last_measurement_time
             if dt <= 0.0:
                 raise ValueError("Controller update time must be strictly increasing")
@@ -292,57 +200,33 @@ class LVDTMPCController:
         self._last_measured_position = measured_position
         self._last_measurement_time = time
 
-        best_sequence: Tuple[float, ...] | None = None
-        best_cost = float("inf")
-
-        for sequence in self._voltage_sequences():
-            cost, _ = self._evaluate_sequence(self._state, sequence)
-            if cost < best_cost:
-                best_cost = cost
-                best_sequence = sequence
-
-        if best_sequence is None:
-            return 0.0
-
-        best_voltage = best_sequence[0]
+        u_seq = self._optimize_sequence(self._state)
+        mpc_voltage = u_seq[0]
 
         position_error = self.target_lvdt - normalized_measurement
         friction_floor = self._dynamic_friction_compensation(position_error)
-        if (
-            abs(self._state[1]) < self._motor.stop_speed_threshold
-            and abs(position_error) > self.position_tolerance
-            and abs(best_voltage) < friction_floor
-        ):
-            direction = 1.0 if position_error >= 0.0 else -1.0
-            best_voltage = direction * friction_floor
-
-        best_voltage = self._clamp_voltage(best_voltage)
 
         u_pd = self.pd_kp * position_error - self.pd_kd * estimated_speed
-        blended_voltage = (
-            self.pd_blend * best_voltage + (1.0 - self.pd_blend) * u_pd
-        )
-        blended_voltage = self._clamp_voltage(blended_voltage)
+        u_raw = self.pd_blend * mpc_voltage + (1.0 - self.pd_blend) * u_pd
 
         if (
             abs(self._state[1]) < self._motor.stop_speed_threshold
             and abs(position_error) > self.position_tolerance
-            and abs(blended_voltage) < friction_floor
+            and friction_floor > 0.0
+            and abs(u_raw) < friction_floor
         ):
-            direction = 1.0 if position_error >= 0.0 else -1.0
-            blended_voltage = direction * friction_floor
-            blended_voltage = self._clamp_voltage(blended_voltage)
+            u_raw = math.copysign(friction_floor, position_error)
 
-        self._state = self._predict_next(self._state, blended_voltage)
-        self._last_voltage = blended_voltage
+        u = self._clamp_voltage(u_raw)
 
-        return blended_voltage
+        self._state = self._predict_next(self._state, u)
+        self._last_voltage = u
+
+        return u
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal helpers: motor and friction
     # ------------------------------------------------------------------
-    def _voltage_sequences(self) -> Iterable[Tuple[float, ...]]:
-        return product(self._voltage_candidates, repeat=self.horizon)
 
     def _apply_motor_parameters(
         self,
@@ -355,7 +239,6 @@ class LVDTMPCController:
             self._active_user_friction_compensation,
             self.friction_compensation,
         ) = self._determine_friction_compensation(motor, friction_compensation)
-        self._voltage_candidates = self._build_voltage_candidates(self._candidate_count)
         self._prediction_models = self._build_prediction_models(motor)
 
     def _determine_friction_compensation(
@@ -375,37 +258,22 @@ class LVDTMPCController:
         if friction_compensation is not None:
             if friction_compensation <= 0:
                 raise ValueError("friction_compensation must be positive")
-            user_value = min(friction_compensation, self.voltage_limit)
+            user_value = min(float(friction_compensation), self.voltage_limit)
 
-        min_motion_voltage = motor.static_friction * motor.resistance / motor._kt
-        auto_value = min_motion_voltage * self.auto_fc_gain
+        if motor._kt == 0.0:
+            base = 0.0
+        else:
+            base = motor.static_friction * motor.resistance / motor._kt
+
+        auto_value = base * self.auto_fc_gain
         if self.auto_fc_cap is not None:
             auto_value = min(auto_value, self.auto_fc_cap)
         auto_value = max(auto_value, self.auto_fc_floor)
         auto_value = min(auto_value, self.voltage_limit)
 
-        grid_value = auto_value if user_value is None else max(auto_value, user_value)
+        effective = user_value if user_value is not None else auto_value
 
-        return auto_value, user_value, grid_value
-
-    def _build_voltage_candidates(self, candidate_count: int) -> Tuple[float, ...]:
-        half = candidate_count // 2
-        step = self.voltage_limit / half
-        values = {
-            0.0,
-        }
-        for index in range(1, half + 1):
-            voltage = index * step
-            values.add(min(voltage, self.voltage_limit))
-            values.add(max(-voltage, -self.voltage_limit))
-
-        # Guarantee the availability of the minimum motion voltage in both
-        # polarities to overcome static friction when necessary. This may grow
-        # the candidate set beyond the requested ``candidate_count``.
-        values.add(min(self.friction_compensation, self.voltage_limit))
-        values.add(max(-self.friction_compensation, -self.voltage_limit))
-
-        return tuple(sorted(values))
+        return auto_value, user_value, effective
 
     def _dynamic_friction_compensation(self, position_error: float) -> float:
         error = abs(position_error)
@@ -427,9 +295,11 @@ class LVDTMPCController:
         return min(blended, self.voltage_limit)
 
     def _build_prediction_models(
-        self, motor: BrushedMotorModel
+        self,
+        motor: BrushedMotorModel,
     ) -> Tuple[BrushedMotorModel, ...]:
         models: List[BrushedMotorModel] = [motor]
+
         if self.robust_electrical:
             return tuple(models)
 
@@ -449,9 +319,16 @@ class LVDTMPCController:
         return tuple(models)
 
     def _clone_motor(
-        self, motor: BrushedMotorModel, *, inductance: float
+        self,
+        motor: BrushedMotorModel,
+        *,
+        inductance: float,
     ) -> BrushedMotorModel:
         return _clone_motor_with_inductance(motor, inductance=inductance)
+
+    # ------------------------------------------------------------------
+    # Internal helpers: optimisation and cost
+    # ------------------------------------------------------------------
 
     def _evaluate_sequence(
         self,
@@ -487,6 +364,7 @@ class LVDTMPCController:
             predicted_state = self._predict_next_for_model(state, voltage, motor)
             lvdt = self._position_to_measurement(predicted_state[2], motor=motor)
             position_error = self.target_lvdt - lvdt
+
             cost += self.weights.position * position_error * position_error
             cost += self.weights.speed * predicted_state[1] * predicted_state[1]
             cost += self.weights.voltage * voltage * voltage
@@ -496,19 +374,73 @@ class LVDTMPCController:
                 cost += self.weights.delta_voltage * delta * delta
             previous_voltage = voltage
 
+            friction_floor = self._dynamic_friction_compensation(position_error)
             if (
                 abs(predicted_state[1]) < motor.stop_speed_threshold
                 and abs(position_error) > self.position_tolerance
-                and abs(voltage) < self._dynamic_friction_compensation(position_error)
+                and friction_floor > 0.0
+                and abs(voltage) < friction_floor
             ):
                 cost += self.static_friction_penalty
 
             state = predicted_state
 
-        terminal_error = self.target_lvdt - self._position_to_measurement(state[2], motor=motor)
+        terminal_error = self.target_lvdt - self._position_to_measurement(
+            state[2], motor=motor
+        )
         cost += self.weights.terminal_position * terminal_error * terminal_error
 
         return cost, state
+
+    def _optimize_sequence(
+        self,
+        initial_state: Tuple[float, float, float],
+    ) -> Tuple[float, ...]:
+        horizon = self.horizon
+        limit = self.voltage_limit
+        eps = self._opt_eps
+        step = self._opt_step
+
+        if isinstance(self._u_seq, tuple) and len(self._u_seq) == horizon:
+            last = self._u_seq
+            u = [last[i + 1] if i + 1 < horizon else last[-1] for i in range(horizon)]
+        else:
+            base = self._last_voltage or 0.0
+            u = [base for _ in range(horizon)]
+
+        for i in range(horizon):
+            u[i] = _clamp_symmetric(u[i], limit)
+
+        for _ in range(self._opt_iters):
+            for i in range(horizon):
+                base = u[i]
+
+                up = _clamp_symmetric(base + eps, limit)
+                u[i] = up
+                j_plus, _ = self._evaluate_sequence(initial_state, tuple(u))
+
+                down = _clamp_symmetric(base - eps, limit)
+                u[i] = down
+                j_minus, _ = self._evaluate_sequence(initial_state, tuple(u))
+
+                u[i] = base
+
+                if math.isfinite(j_plus) and math.isfinite(j_minus):
+                    grad = (j_plus - j_minus) / (2.0 * eps)
+                    candidate = base - step * grad
+                    if math.isfinite(candidate):
+                        u[i] = _clamp_symmetric(candidate, limit)
+                    else:
+                        u[i] = base
+                else:
+                    u[i] = base
+
+        self._u_seq = tuple(u)
+        return self._u_seq
+
+    # ------------------------------------------------------------------
+    # Internal helpers: prediction and conversions
+    # ------------------------------------------------------------------
 
     def _predict_next(
         self,
@@ -521,8 +453,10 @@ class LVDTMPCController:
         self,
         state: Tuple[float, float, float],
         voltage: float,
-        motor: BrushedMotorModel,
+        motor: BrushedMotorModel | None,
     ) -> Tuple[float, float, float]:
+        if motor is None:
+            return state
         return _predict_next_state(
             state,
             voltage,

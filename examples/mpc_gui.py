@@ -19,6 +19,7 @@ from motor_model.mpc_controller import MPCWeights
 from motor_model.mpc_simulation import (
     MotorSimulation,
     build_default_controller_kwargs,
+    build_default_continuous_controller_kwargs,
     build_default_tube_controller_kwargs,
     build_default_motor_kwargs,
 )
@@ -115,7 +116,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 "Coulomb friction [N·m]", 0.0, 0.02, 1e-4, 4, defaults["coulomb_friction"]
             ),
             "static_friction": DoubleParamConfig(
-                "Static friction [N·m]", 0.0, 0.02, 1e-4, 4, defaults["static_friction"]
+                "Static friction [N·m]", 0.0, 0.1, 1e-4, 4, defaults["static_friction"]
             ),
             "stop_speed_threshold": DoubleParamConfig(
                 "Stop threshold [rad/s]", 0.0, 0.1, 1e-4, 6, defaults["stop_speed_threshold"]
@@ -235,6 +236,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.controller_type_combo = QtWidgets.QComboBox()
         self.controller_type_combo.addItem("LVDT MPC", "lvdtnom")
         self.controller_type_combo.addItem("Tube MPC", "tube")
+        self.controller_type_combo.addItem("Continuous MPC", "continuous")
         self.controller_type_combo.currentIndexChanged.connect(
             self._on_controller_type_changed
         )
@@ -253,12 +255,23 @@ class ControllerDemo(QtWidgets.QMainWindow):
             lvd_widget
         )
 
+        cont_defaults = build_default_continuous_controller_kwargs()
+        cont_widget, cont_controls = self._build_continuous_controller_controls(cont_defaults)
+        self.controller_controls_by_type["continuous"] = cont_controls
+        self._controller_stack_indices["continuous"] = self.controller_stack.addWidget(
+            cont_widget
+        )
+
         tube_defaults = build_default_tube_controller_kwargs()
         tube_widget, tube_controls = self._build_tube_controller_controls(tube_defaults)
         self.controller_controls_by_type["tube"] = tube_controls
         self._controller_stack_indices["tube"] = self.controller_stack.addWidget(
             tube_widget
         )
+
+        default_index = self.controller_type_combo.findData("continuous")
+        if default_index >= 0:
+            self.controller_type_combo.setCurrentIndex(default_index)
 
         self.controller_stack.setCurrentIndex(
             self._controller_stack_indices[self._current_controller_type()]
@@ -428,6 +441,115 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         return widget, controls
 
+    def _build_continuous_controller_controls(
+        self, defaults: Dict[str, float]
+    ) -> tuple[QtWidgets.QWidget, Dict[str, QtWidgets.QWidget]]:
+        widget = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(widget)
+        controls: Dict[str, QtWidgets.QWidget] = {}
+
+        dt_spin = self._create_double_spin(1e-4, 0.1, 1e-4, 5, defaults["dt"])
+        form.addRow("Controller dt [s]", dt_spin)
+        controls["dt"] = dt_spin
+
+        horizon_spin = self._create_int_spin(1, 12, 1, int(defaults["horizon"]))
+        form.addRow("Horizon", horizon_spin)
+        controls["horizon"] = horizon_spin
+
+        voltage_spin = self._create_double_spin(1.0, 60.0, 0.5, 2, defaults["voltage_limit"])
+        form.addRow("Voltage limit [V]", voltage_spin)
+        controls["voltage_limit"] = voltage_spin
+
+        tolerance_spin = self._create_double_spin(0.0, 0.5, 0.005, 3, defaults["position_tolerance"])
+        form.addRow("Position tolerance", tolerance_spin)
+        controls["position_tolerance"] = tolerance_spin
+
+        penalty_spin = self._create_double_spin(0.0, 1000.0, 1.0, 2, defaults["static_friction_penalty"])
+        form.addRow("Static friction penalty", penalty_spin)
+        controls["static_friction_penalty"] = penalty_spin
+
+        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 1.1))
+        form.addRow("Auto friction gain", auto_gain_spin)
+        controls["auto_fc_gain"] = auto_gain_spin
+
+        auto_floor_spin = self._create_double_spin(
+            0.0,
+            60.0,
+            0.05,
+            2,
+            defaults.get("auto_fc_floor", 0.0),
+        )
+        form.addRow("Auto friction floor [V]", auto_floor_spin)
+        controls["auto_fc_floor"] = auto_floor_spin
+
+        auto_cap_value = defaults.get("auto_fc_cap")
+        auto_cap_spin = self._create_double_spin(0.1, 60.0, 0.05, 2, defaults["voltage_limit"])
+        if isinstance(auto_cap_value, (int, float)):
+            auto_cap_spin.setValue(float(auto_cap_value))
+        auto_cap_spin.setEnabled(isinstance(auto_cap_value, (int, float)))
+
+        auto_cap_checkbox = QtWidgets.QCheckBox("Enable cap")
+        auto_cap_checkbox.setChecked(isinstance(auto_cap_value, (int, float)))
+
+        def _on_auto_cap_state_changed(state: int) -> None:
+            enabled = state == QtCore.Qt.Checked
+            auto_cap_spin.setEnabled(enabled)
+            self._on_parameters_changed()
+
+        auto_cap_checkbox.stateChanged.connect(_on_auto_cap_state_changed)
+
+        auto_cap_container = QtWidgets.QWidget()
+        auto_cap_layout = QtWidgets.QHBoxLayout(auto_cap_container)
+        auto_cap_layout.setContentsMargins(0, 0, 0, 0)
+        auto_cap_layout.setSpacing(6)
+        auto_cap_layout.addWidget(auto_cap_checkbox)
+        auto_cap_layout.addWidget(auto_cap_spin)
+        auto_cap_layout.addStretch(1)
+
+        form.addRow("Auto friction cap [V]", auto_cap_container)
+        controls["auto_fc_cap_enabled"] = auto_cap_checkbox
+        controls["auto_fc_cap"] = auto_cap_spin
+
+        blend_low_spin = self._create_double_spin(
+            0.0,
+            1.0,
+            0.005,
+            3,
+            defaults.get("friction_blend_error_low", 0.05),
+        )
+        form.addRow("Blend error low", blend_low_spin)
+        controls["friction_blend_error_low"] = blend_low_spin
+
+        blend_high_spin = self._create_double_spin(
+            0.0,
+            1.0,
+            0.005,
+            3,
+            defaults.get("friction_blend_error_high", 0.2),
+        )
+        form.addRow("Blend error high", blend_high_spin)
+        controls["friction_blend_error_high"] = blend_high_spin
+
+        opt_iters_spin = self._create_int_spin(1, 20, 1, int(defaults.get("opt_iters", 4)))
+        form.addRow("Optimiser iterations", opt_iters_spin)
+        controls["opt_iters"] = opt_iters_spin
+
+        opt_step_spin = self._create_double_spin(0.01, 5.0, 0.01, 3, defaults.get("opt_step", 0.3))
+        form.addRow("Optimiser step", opt_step_spin)
+        controls["opt_step"] = opt_step_spin
+
+        opt_eps_spin = self._create_double_spin(1e-3, 10.0, 1e-3, 3, defaults.get("opt_eps", 0.5))
+        form.addRow("Finite diff epsilon", opt_eps_spin)
+        controls["opt_eps"] = opt_eps_spin
+
+        substeps_spin = self._create_int_spin(
+            1, 50, 1, int(defaults["internal_substeps"])
+        )
+        form.addRow("Internal substeps", substeps_spin)
+        controls["internal_substeps"] = substeps_spin
+
+        return widget, controls
+
     def _build_tube_controller_controls(
         self, defaults: Dict[str, float]
     ) -> tuple[QtWidgets.QWidget, Dict[str, QtWidgets.QWidget]]:
@@ -536,7 +658,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
     def _current_controller_type(self) -> str:
         data = self.controller_type_combo.currentData() if hasattr(self, "controller_type_combo") else None
         if not data:
-            return "lvdtnom"
+            return "continuous"
         return str(data)
 
     def _on_controller_type_changed(self, index: int) -> None:  # noqa: ARG002
@@ -578,9 +700,6 @@ class ControllerDemo(QtWidgets.QMainWindow):
             "voltage_limit": float(
                 cast(QtWidgets.QDoubleSpinBox, controls["voltage_limit"]).value()
             ),
-            "candidate_count": int(
-                cast(QtWidgets.QSpinBox, controls["candidate_count"]).value()
-            ),
             "position_tolerance": float(
                 cast(QtWidgets.QDoubleSpinBox, controls["position_tolerance"]).value()
             ),
@@ -591,6 +710,11 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 cast(QtWidgets.QSpinBox, controls["internal_substeps"]).value()
             ),
         }
+
+        if "candidate_count" in controls:
+            kwargs["candidate_count"] = int(
+                cast(QtWidgets.QSpinBox, controls["candidate_count"]).value()
+            )
 
         if "auto_fc_gain" in controls:
             kwargs.update(
@@ -623,6 +747,21 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 )
             else:
                 kwargs["auto_fc_cap"] = None
+
+        if controller_type == "continuous":
+            kwargs.update(
+                {
+                    "opt_iters": int(
+                        cast(QtWidgets.QSpinBox, controls["opt_iters"]).value()
+                    ),
+                    "opt_step": float(
+                        cast(QtWidgets.QDoubleSpinBox, controls["opt_step"]).value()
+                    ),
+                    "opt_eps": float(
+                        cast(QtWidgets.QDoubleSpinBox, controls["opt_eps"]).value()
+                    ),
+                }
+            )
 
         if controller_type == "tube":
             kwargs.update(
