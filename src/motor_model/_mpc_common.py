@@ -21,11 +21,11 @@ Matrix3 = Tuple[
 class MPCWeights:
     """Weights used by the MPC cost function."""
 
-    position: float = 280.0
-    speed: float = 1.0
+    position: float = 300.0
+    speed: float = 0.5
     voltage: float = 0.02
-    delta_voltage: float = 0.5
-    terminal_position: float = 600.0
+    delta_voltage: float = 0.75
+    terminal_position: float = 700.0
 
 
 def _predict_next_state(

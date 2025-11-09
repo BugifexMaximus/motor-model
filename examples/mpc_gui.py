@@ -116,7 +116,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 "Coulomb friction [N·m]", 0.0, 0.02, 1e-4, 4, defaults["coulomb_friction"]
             ),
             "static_friction": DoubleParamConfig(
-                "Static friction [N·m]", 0.0, 0.02, 1e-4, 4, defaults["static_friction"]
+                "Static friction [N·m]", 0.0, 0.1, 1e-4, 4, defaults["static_friction"]
             ),
             "stop_speed_threshold": DoubleParamConfig(
                 "Stop threshold [rad/s]", 0.0, 0.1, 1e-4, 6, defaults["stop_speed_threshold"]
@@ -268,6 +268,10 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self._controller_stack_indices["tube"] = self.controller_stack.addWidget(
             tube_widget
         )
+
+        default_index = self.controller_type_combo.findData("continuous")
+        if default_index >= 0:
+            self.controller_type_combo.setCurrentIndex(default_index)
 
         self.controller_stack.setCurrentIndex(
             self._controller_stack_indices[self._current_controller_type()]
@@ -654,7 +658,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
     def _current_controller_type(self) -> str:
         data = self.controller_type_combo.currentData() if hasattr(self, "controller_type_combo") else None
         if not data:
-            return "lvdtnom"
+            return "continuous"
         return str(data)
 
     def _on_controller_type_changed(self, index: int) -> None:  # noqa: ARG002
