@@ -5,10 +5,18 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Tuple
+from typing import Deque, Dict, Tuple, Literal
 
 from .brushed_motor import BrushedMotorModel
 from .mpc_controller import LVDTMPCController, MPCWeights
+from .tube_mpc_controller import TubeMPCController
+
+ControllerName = Literal["lvdtnom", "tube"]
+
+_CONTROLLER_CLASSES = {
+    "lvdtnom": LVDTMPCController,
+    "tube": TubeMPCController,
+}
 
 
 @dataclass(frozen=True)
@@ -39,13 +47,13 @@ class MotorSimulation:
 
     The class advances the :class:`~motor_model.brushed_motor.BrushedMotorModel`
     using an explicit Euler integrator and keeps a short rolling history of the
-    state variables.  It mirrors the simplified model inside the
-    :class:`~motor_model.mpc_controller.LVDTMPCController` when the controller
-    is configured without the quasi-static electrical approximation
-    (``robust_electrical=False``) and both share the same parameters. This is
-    sufficient for GUI and unit tests to exercise the control loop without
-    requiring the PyQt event loop, while still allowing the controller to use a
-    more robust internal model when desired.
+    state variables.  It can wrap either the standard
+    :class:`~motor_model.mpc_controller.LVDTMPCController` or the
+    :class:`~motor_model.tube_mpc_controller.TubeMPCController` depending on the
+    selected ``controller_type``. When the controller and plant parameters
+    match, the simulation mirrors the simplified internal model used by the
+    MPC, providing an inexpensive environment for the GUI and unit tests to
+    exercise the control loop.
     """
 
     def __init__(
@@ -56,6 +64,7 @@ class MotorSimulation:
         history_duration: float = 10.0,
         max_points: int = 8000,
         controller_motor_kwargs: Dict[str, float] | None = None,
+        controller_type: ControllerName = "lvdtnom",
     ) -> None:
         self._motor_kwargs = dict(motor_kwargs)
         self._controller_kwargs = dict(controller_kwargs)
@@ -64,8 +73,13 @@ class MotorSimulation:
             if controller_motor_kwargs is not None
             else dict(motor_kwargs)
         )
+        if controller_type not in _CONTROLLER_CLASSES:
+            valid = ", ".join(sorted(_CONTROLLER_CLASSES))
+            raise ValueError(f"Unsupported controller_type '{controller_type}'. Choose from: {valid}.")
+
         self.history_duration = history_duration
         self.max_points = max_points
+        self._controller_type: ControllerName = controller_type
         self.reset()
 
     # ------------------------------------------------------------------
@@ -81,7 +95,8 @@ class MotorSimulation:
         weights = controller_kwargs.pop("weights", MPCWeights())
         if not isinstance(weights, MPCWeights):
             raise TypeError("weights must be an MPCWeights instance")
-        self.controller = LVDTMPCController(
+        controller_cls = _CONTROLLER_CLASSES[self._controller_type]
+        self.controller = controller_cls(
             controller_motor, weights=weights, **controller_kwargs
         )
 
@@ -255,11 +270,35 @@ def build_default_controller_kwargs(**overrides: float) -> Dict[str, float]:
     return kwargs
 
 
+def build_default_tube_controller_kwargs(**overrides: float) -> Dict[str, float]:
+    """Return ``TubeMPCController`` kwargs paired with the defaults above."""
+
+    kwargs: Dict[str, float] = {
+        "dt": 0.005,
+        "horizon": 4,
+        "voltage_limit": 10.0,
+        "target_lvdt": 0.0,
+        "candidate_count": 5,
+        "position_tolerance": 0.02,
+        "static_friction_penalty": 50.0,
+        "internal_substeps": 5,
+        "inductance_rel_uncertainty": 0.5,
+        "tube_tolerance": 1e-6,
+        "tube_max_iterations": 500,
+        "lqr_state_weight": (2.0, 0.2, 5.0),
+        "lqr_input_weight": 0.5,
+        "weights": MPCWeights(),
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 __all__ = [
     "MotorSimulation",
     "SimulationState",
     "SimulationHistory",
     "build_default_controller_kwargs",
+    "build_default_tube_controller_kwargs",
     "build_default_motor_kwargs",
 ]
 

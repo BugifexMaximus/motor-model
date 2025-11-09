@@ -10,6 +10,7 @@ from motor_model import (
     MPCWeights,
     MotorSimulation,
     build_default_controller_kwargs,
+    build_default_tube_controller_kwargs,
     build_default_motor_kwargs,
 )
 
@@ -19,9 +20,17 @@ def _make_simulation(
     motor_overrides=None,
     controller_overrides=None,
     controller_model_overrides=None,
+    controller_type: str = "lvdtnom",
 ):
     motor_kwargs = build_default_motor_kwargs(**(motor_overrides or {}))
-    controller_kwargs = build_default_controller_kwargs(**(controller_overrides or {}))
+    if controller_type == "tube":
+        controller_kwargs = build_default_tube_controller_kwargs(
+            **(controller_overrides or {})
+        )
+    else:
+        controller_kwargs = build_default_controller_kwargs(
+            **(controller_overrides or {})
+        )
     controller_kwargs["weights"] = MPCWeights()  # ensure a fresh copy
     controller_model_kwargs = None
     if controller_model_overrides:
@@ -30,6 +39,7 @@ def _make_simulation(
         motor_kwargs,
         controller_kwargs,
         controller_motor_kwargs=controller_model_kwargs,
+        controller_type=controller_type,
     )
 
 
@@ -51,6 +61,26 @@ def test_simulation_tracks_step_setpoint():
     state = sim.state()
     assert math.isclose(math.degrees(state.position), target_deg, abs_tol=0.5)
     assert abs(state.speed) < math.radians(2.0)
+
+
+def test_tube_controller_simulation_remains_stable():
+    target_deg = 6.0
+    sim = _make_simulation(controller_type="tube")
+    sim.set_target_position(math.radians(target_deg))
+
+    expected_lvdt = math.radians(target_deg) / sim.motor.lvdt_full_scale
+    assert math.isclose(sim.controller.target_lvdt, expected_lvdt, rel_tol=1e-6)
+
+    sim.run_for(2.0)
+
+    state = sim.state()
+    assert math.isfinite(state.position)
+    assert math.isfinite(state.speed)
+    assert abs(math.degrees(state.position)) <= 30.0
+    assert abs(math.degrees(state.speed)) <= 30.0
+
+    history = sim.history()
+    assert max(abs(v) for v in history.voltage) <= sim.controller.voltage_limit + 1e-6
 
 
 def _deg(value: float) -> float:
