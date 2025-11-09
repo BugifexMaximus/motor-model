@@ -358,6 +358,68 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
+        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 1.1))
+        form.addRow("Auto friction gain", auto_gain_spin)
+        controls["auto_fc_gain"] = auto_gain_spin
+
+        auto_floor_spin = self._create_double_spin(
+            0.0,
+            60.0,
+            0.05,
+            2,
+            defaults.get("auto_fc_floor", 0.0),
+        )
+        form.addRow("Auto friction floor [V]", auto_floor_spin)
+        controls["auto_fc_floor"] = auto_floor_spin
+
+        auto_cap_value = defaults.get("auto_fc_cap")
+        auto_cap_spin = self._create_double_spin(0.1, 60.0, 0.05, 2, defaults["voltage_limit"])
+        if isinstance(auto_cap_value, (int, float)):
+            auto_cap_spin.setValue(float(auto_cap_value))
+        auto_cap_spin.setEnabled(isinstance(auto_cap_value, (int, float)))
+
+        auto_cap_checkbox = QtWidgets.QCheckBox("Enable cap")
+        auto_cap_checkbox.setChecked(isinstance(auto_cap_value, (int, float)))
+
+        def _on_auto_cap_state_changed(state: int) -> None:
+            enabled = state == QtCore.Qt.Checked
+            auto_cap_spin.setEnabled(enabled)
+            self._on_parameters_changed()
+
+        auto_cap_checkbox.stateChanged.connect(_on_auto_cap_state_changed)
+
+        auto_cap_container = QtWidgets.QWidget()
+        auto_cap_layout = QtWidgets.QHBoxLayout(auto_cap_container)
+        auto_cap_layout.setContentsMargins(0, 0, 0, 0)
+        auto_cap_layout.setSpacing(6)
+        auto_cap_layout.addWidget(auto_cap_checkbox)
+        auto_cap_layout.addWidget(auto_cap_spin)
+        auto_cap_layout.addStretch(1)
+
+        form.addRow("Auto friction cap [V]", auto_cap_container)
+        controls["auto_fc_cap_enabled"] = auto_cap_checkbox
+        controls["auto_fc_cap"] = auto_cap_spin
+
+        blend_low_spin = self._create_double_spin(
+            0.0,
+            1.0,
+            0.005,
+            3,
+            defaults.get("friction_blend_error_low", 0.05),
+        )
+        form.addRow("Blend error low", blend_low_spin)
+        controls["friction_blend_error_low"] = blend_low_spin
+
+        blend_high_spin = self._create_double_spin(
+            0.0,
+            1.0,
+            0.005,
+            3,
+            defaults.get("friction_blend_error_high", 0.2),
+        )
+        form.addRow("Blend error high", blend_high_spin)
+        controls["friction_blend_error_high"] = blend_high_spin
+
         substeps_spin = self._create_int_spin(
             1, 50, 1, int(defaults["internal_substeps"])
         )
@@ -507,10 +569,10 @@ class ControllerDemo(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------
     # Simulation handling
     # ------------------------------------------------------------------
-    def _controller_kwargs_for_type(self, controller_type: str) -> Dict[str, float]:
+    def _controller_kwargs_for_type(self, controller_type: str) -> Dict[str, object]:
         controls = self.controller_controls_by_type[controller_type]
 
-        kwargs: Dict[str, float] = {
+        kwargs: Dict[str, object] = {
             "dt": float(cast(QtWidgets.QDoubleSpinBox, controls["dt"]).value()),
             "horizon": int(cast(QtWidgets.QSpinBox, controls["horizon"]).value()),
             "voltage_limit": float(
@@ -529,6 +591,38 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 cast(QtWidgets.QSpinBox, controls["internal_substeps"]).value()
             ),
         }
+
+        if "auto_fc_gain" in controls:
+            kwargs.update(
+                {
+                    "auto_fc_gain": float(
+                        cast(QtWidgets.QDoubleSpinBox, controls["auto_fc_gain"]).value()
+                    ),
+                    "auto_fc_floor": float(
+                        cast(QtWidgets.QDoubleSpinBox, controls["auto_fc_floor"]).value()
+                    ),
+                    "friction_blend_error_low": float(
+                        cast(
+                            QtWidgets.QDoubleSpinBox,
+                            controls["friction_blend_error_low"],
+                        ).value()
+                    ),
+                    "friction_blend_error_high": float(
+                        cast(
+                            QtWidgets.QDoubleSpinBox,
+                            controls["friction_blend_error_high"],
+                        ).value()
+                    ),
+                }
+            )
+
+            cap_enabled = cast(QtWidgets.QCheckBox, controls["auto_fc_cap_enabled"]).isChecked()
+            if cap_enabled:
+                kwargs["auto_fc_cap"] = float(
+                    cast(QtWidgets.QDoubleSpinBox, controls["auto_fc_cap"]).value()
+                )
+            else:
+                kwargs["auto_fc_cap"] = None
 
         if controller_type == "tube":
             kwargs.update(

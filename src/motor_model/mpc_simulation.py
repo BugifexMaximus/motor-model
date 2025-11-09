@@ -60,7 +60,7 @@ class MotorSimulation:
     def __init__(
         self,
         motor_kwargs: Dict[str, float],
-        controller_kwargs: Dict[str, float],
+        controller_kwargs: Dict[str, object],
         *,
         history_duration: float = 10.0,
         max_points: int = 8000,
@@ -266,10 +266,10 @@ def build_default_motor_kwargs(**overrides: float) -> Dict[str, float]:
     return kwargs
 
 
-def build_default_controller_kwargs(**overrides: float) -> Dict[str, float]:
+def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
     """Return ``LVDTMPCController`` kwargs paired with the defaults above."""
 
-    kwargs: Dict[str, float] = {
+    kwargs: Dict[str, object] = {
         "dt": 0.005,
         "horizon": 4,
         "voltage_limit": 10.0,
@@ -279,15 +279,20 @@ def build_default_controller_kwargs(**overrides: float) -> Dict[str, float]:
         "static_friction_penalty": 50.0,
         "internal_substeps": 15,
         "weights": MPCWeights(),
+        "auto_fc_gain": 1.1,
+        "auto_fc_floor": 0.0,
+        "auto_fc_cap": None,
+        "friction_blend_error_low": 0.05,
+        "friction_blend_error_high": 0.2,
     }
     kwargs.update(overrides)
     return kwargs
 
 
-def build_default_tube_controller_kwargs(**overrides: float) -> Dict[str, float]:
+def build_default_tube_controller_kwargs(**overrides: object) -> Dict[str, object]:
     """Return ``TubeMPCController`` kwargs paired with the defaults above."""
 
-    kwargs: Dict[str, float] = {
+    kwargs: Dict[str, object] = {
         "dt": 0.005,
         "horizon": 4,
         "voltage_limit": 10.0,

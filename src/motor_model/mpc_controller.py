@@ -57,6 +57,21 @@ class LVDTMPCController:
         Minimum absolute voltage command (in Volts) used when the rotor is
         static and the error exceeds the tolerance. When ``None`` the value is
         derived from the motor parameters.
+    auto_fc_gain:
+        Multiplicative factor applied to the estimated breakaway voltage when
+        computing the automatic friction compensation.
+    auto_fc_floor:
+        Minimum voltage (in Volts) allowed for the automatic friction
+        compensation estimate.
+    auto_fc_cap:
+        Optional upper bound (in Volts) applied to the automatic friction
+        compensation estimate before clamping to ``voltage_limit``.
+    friction_blend_error_low:
+        Absolute position error (normalised LVDT units) below which the
+        controller uses only the automatic friction compensation estimate.
+    friction_blend_error_high:
+        Absolute position error (normalised LVDT units) above which the
+        controller uses the manual ``friction_compensation`` when supplied.
         internal_substeps:
             Number of internal integration slices used by the MPC prediction model
             within a single controller period. Setting this so that ``dt`` divided
@@ -101,6 +116,11 @@ class LVDTMPCController:
         position_tolerance: float = 0.02,
         static_friction_penalty: float = 50.0,
         friction_compensation: float | None = None,
+        auto_fc_gain: float = 1.1,
+        auto_fc_floor: float = 0.0,
+        auto_fc_cap: float | None = None,
+        friction_blend_error_low: float = 0.05,
+        friction_blend_error_high: float = 0.2,
         internal_substeps: int = 15,
         robust_electrical: bool = True,
         electrical_alpha: float | None = None,
@@ -137,6 +157,18 @@ class LVDTMPCController:
             raise ValueError("pd_kp must be positive")
         if pd_kd < 0.0:
             raise ValueError("pd_kd must be non-negative")
+        if auto_fc_gain <= 0.0:
+            raise ValueError("auto_fc_gain must be positive")
+        if auto_fc_floor < 0.0:
+            raise ValueError("auto_fc_floor must be non-negative")
+        if auto_fc_cap is not None and auto_fc_cap <= 0.0:
+            raise ValueError("auto_fc_cap must be positive when provided")
+        if friction_blend_error_low < 0.0:
+            raise ValueError("friction_blend_error_low must be non-negative")
+        if friction_blend_error_high <= friction_blend_error_low:
+            raise ValueError(
+                "friction_blend_error_high must be greater than friction_blend_error_low"
+            )
 
         self.dt = dt
         self.horizon = horizon
@@ -152,10 +184,17 @@ class LVDTMPCController:
         self.pd_blend = pd_blend
         self.pd_kp = pd_kp
         self.pd_kd = pd_kd
+        self.auto_fc_gain = auto_fc_gain
+        self.auto_fc_floor = auto_fc_floor
+        self.auto_fc_cap = auto_fc_cap
+        self.friction_blend_error_low = friction_blend_error_low
+        self.friction_blend_error_high = friction_blend_error_high
 
         self._candidate_count = candidate_count
-        self._user_friction_compensation = friction_compensation
+        self._user_friction_compensation_request = friction_compensation
         self._prediction_models: Tuple[BrushedMotorModel, ...] = tuple()
+        self._auto_friction_compensation: float = 0.0
+        self._active_user_friction_compensation: float | None = None
 
         self._apply_motor_parameters(motor, friction_compensation)
 
@@ -268,13 +307,14 @@ class LVDTMPCController:
         best_voltage = best_sequence[0]
 
         position_error = self.target_lvdt - normalized_measurement
+        friction_floor = self._dynamic_friction_compensation(position_error)
         if (
             abs(self._state[1]) < self._motor.stop_speed_threshold
             and abs(position_error) > self.position_tolerance
-            and abs(best_voltage) < self.friction_compensation
+            and abs(best_voltage) < friction_floor
         ):
             direction = 1.0 if position_error >= 0.0 else -1.0
-            best_voltage = direction * self.friction_compensation
+            best_voltage = direction * friction_floor
 
         best_voltage = self._clamp_voltage(best_voltage)
 
@@ -287,10 +327,10 @@ class LVDTMPCController:
         if (
             abs(self._state[1]) < self._motor.stop_speed_threshold
             and abs(position_error) > self.position_tolerance
-            and abs(blended_voltage) < self.friction_compensation
+            and abs(blended_voltage) < friction_floor
         ):
             direction = 1.0 if position_error >= 0.0 else -1.0
-            blended_voltage = direction * self.friction_compensation
+            blended_voltage = direction * friction_floor
             blended_voltage = self._clamp_voltage(blended_voltage)
 
         self._state = self._predict_next(self._state, blended_voltage)
@@ -310,9 +350,11 @@ class LVDTMPCController:
         friction_compensation: float | None,
     ) -> None:
         self._motor = motor
-        self.friction_compensation = self._determine_friction_compensation(
-            motor, friction_compensation
-        )
+        (
+            self._auto_friction_compensation,
+            self._active_user_friction_compensation,
+            self.friction_compensation,
+        ) = self._determine_friction_compensation(motor, friction_compensation)
         self._voltage_candidates = self._build_voltage_candidates(self._candidate_count)
         self._prediction_models = self._build_prediction_models(motor)
 
@@ -320,19 +362,31 @@ class LVDTMPCController:
         self,
         motor: BrushedMotorModel,
         friction_compensation: float | None,
-    ) -> float:
-        if friction_compensation is None and self._user_friction_compensation is not None:
-            friction_compensation = self._user_friction_compensation
+    ) -> Tuple[float, float | None, float]:
+        if (
+            friction_compensation is None
+            and self._user_friction_compensation_request is not None
+        ):
+            friction_compensation = self._user_friction_compensation_request
         elif friction_compensation is not None:
-            self._user_friction_compensation = friction_compensation
+            self._user_friction_compensation_request = friction_compensation
 
+        user_value: float | None = None
         if friction_compensation is not None:
             if friction_compensation <= 0:
                 raise ValueError("friction_compensation must be positive")
-            return min(friction_compensation, self.voltage_limit)
+            user_value = min(friction_compensation, self.voltage_limit)
 
         min_motion_voltage = motor.static_friction * motor.resistance / motor._kt
-        return min(min_motion_voltage * 1.1, self.voltage_limit)
+        auto_value = min_motion_voltage * self.auto_fc_gain
+        if self.auto_fc_cap is not None:
+            auto_value = min(auto_value, self.auto_fc_cap)
+        auto_value = max(auto_value, self.auto_fc_floor)
+        auto_value = min(auto_value, self.voltage_limit)
+
+        grid_value = auto_value if user_value is None else max(auto_value, user_value)
+
+        return auto_value, user_value, grid_value
 
     def _build_voltage_candidates(self, candidate_count: int) -> Tuple[float, ...]:
         half = candidate_count // 2
@@ -352,6 +406,25 @@ class LVDTMPCController:
         values.add(max(-self.friction_compensation, -self.voltage_limit))
 
         return tuple(sorted(values))
+
+    def _dynamic_friction_compensation(self, position_error: float) -> float:
+        error = abs(position_error)
+        auto_value = self._auto_friction_compensation
+        user_value = self._active_user_friction_compensation
+
+        if user_value is None:
+            return auto_value
+
+        if error <= self.friction_blend_error_low:
+            alpha = 0.0
+        elif error >= self.friction_blend_error_high:
+            alpha = 1.0
+        else:
+            span = self.friction_blend_error_high - self.friction_blend_error_low
+            alpha = (error - self.friction_blend_error_low) / span
+
+        blended = (1.0 - alpha) * auto_value + alpha * user_value
+        return min(blended, self.voltage_limit)
 
     def _build_prediction_models(
         self, motor: BrushedMotorModel
@@ -426,7 +499,7 @@ class LVDTMPCController:
             if (
                 abs(predicted_state[1]) < motor.stop_speed_threshold
                 and abs(position_error) > self.position_tolerance
-                and abs(voltage) < self.friction_compensation
+                and abs(voltage) < self._dynamic_friction_compensation(position_error)
             ):
                 cost += self.static_friction_penalty
 
