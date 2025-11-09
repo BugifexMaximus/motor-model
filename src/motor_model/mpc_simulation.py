@@ -102,7 +102,16 @@ class MotorSimulation:
             controller_motor, weights=weights, **controller_kwargs
         )
 
-        substeps = max(1, controller_kwargs.get("internal_substeps", 1))
+        substeps = max(
+            1,
+            getattr(
+                self.controller,
+                "internal_substeps",
+                controller_kwargs.get("internal_substeps", 1),
+            ),
+        )
+        self.motor.integration_substeps = substeps
+        controller_motor.integration_substeps = substeps
         self.plant_dt = self.controller.dt / substeps
         self.measurement_steps = max(1, int(round(self.controller.dt / self.plant_dt)))
         self._steps_since_measurement = 0
@@ -268,7 +277,7 @@ def build_default_controller_kwargs(**overrides: float) -> Dict[str, float]:
         "candidate_count": 5,
         "position_tolerance": 0.02,
         "static_friction_penalty": 50.0,
-        "internal_substeps": 5,
+        "internal_substeps": 15,
         "weights": MPCWeights(),
     }
     kwargs.update(overrides)
@@ -286,7 +295,7 @@ def build_default_tube_controller_kwargs(**overrides: float) -> Dict[str, float]
         "candidate_count": 5,
         "position_tolerance": 0.02,
         "static_friction_penalty": 50.0,
-        "internal_substeps": 5,
+        "internal_substeps": 15,
         "inductance_rel_uncertainty": 0.5,
         "tube_tolerance": 1e-6,
         "tube_max_iterations": 500,

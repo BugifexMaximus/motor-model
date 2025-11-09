@@ -358,7 +358,9 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        substeps_spin = self._create_int_spin(1, 10, 1, int(defaults["internal_substeps"]))
+        substeps_spin = self._create_int_spin(
+            1, 50, 1, int(defaults["internal_substeps"])
+        )
         form.addRow("Internal substeps", substeps_spin)
         controls["internal_substeps"] = substeps_spin
 
@@ -395,7 +397,9 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        substeps_spin = self._create_int_spin(1, 10, 1, int(defaults["internal_substeps"]))
+        substeps_spin = self._create_int_spin(
+            1, 50, 1, int(defaults["internal_substeps"])
+        )
         form.addRow("Internal substeps", substeps_spin)
         controls["internal_substeps"] = substeps_spin
 

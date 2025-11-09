@@ -101,7 +101,7 @@ class LVDTMPCController:
         position_tolerance: float = 0.02,
         static_friction_penalty: float = 50.0,
         friction_compensation: float | None = None,
-        internal_substeps: int = 1,
+        internal_substeps: int = 15,
         robust_electrical: bool = True,
         electrical_alpha: float | None = None,
         inductance_rel_uncertainty: float = 0.5,

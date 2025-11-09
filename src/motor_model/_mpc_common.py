@@ -116,6 +116,7 @@ def _clone_motor_with_inductance(
         spring_compression_ratio=motor.spring_compression_ratio,
         lvdt_full_scale=motor.lvdt_full_scale,
         lvdt_noise_std=0.0,
+        integration_substeps=motor.integration_substeps,
         rng=motor._rng,
     )
 
