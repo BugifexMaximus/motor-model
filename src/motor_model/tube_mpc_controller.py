@@ -633,8 +633,6 @@ class TubeMPCController:
             max_value += max(candidates)
         delta = max(abs(min_value), abs(max_value))
         tightened = max(0.0, self.voltage_limit - delta)
-        if tightened <= 0.0:
-            return self.voltage_limit
         return tightened
 
     def _build_voltage_candidates(self, limit: float) -> Tuple[float, ...]:
