@@ -49,6 +49,7 @@ class ContMPCController:
         pi_gate_blocked: bool = True,
         pi_gate_error_band: bool = True,
         pi_leak_near_setpoint: bool = True,
+        use_model_integrator: bool = False,
         opt_iters: int = 10,
         opt_step: float = 0.1,
         opt_eps: float | None = 0.1,
@@ -119,7 +120,15 @@ class ContMPCController:
         self.pi_gate_blocked = pi_gate_blocked
         self.pi_gate_error_band = pi_gate_error_band
         self.pi_leak_near_setpoint = pi_leak_near_setpoint
+        self.use_model_integrator = use_model_integrator
+
+        # Error-based PI integrator
         self._int_err = 0.0
+
+        # Model-based bias integrator (for offset-free MPC mode)
+        self._u_bias = 0.0
+        self._nominal_state: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self.model_bias_limit = self.pi_limit
 
         self.auto_fc_gain = auto_fc_gain
         self.auto_fc_floor = auto_fc_floor
@@ -167,6 +176,10 @@ class ContMPCController:
 
         self._apply_motor_parameters(motor, friction_compensation)
 
+        # Keep nominal aligned & bias bounded across motor changes
+        self._nominal_state = self._state
+        self._u_bias = _clamp_symmetric(self._u_bias, self.model_bias_limit)
+
         if self._last_voltage is not None:
             self._last_voltage = self._clamp_voltage(self._last_voltage)
 
@@ -188,6 +201,8 @@ class ContMPCController:
         self._last_measurement_time = None
         self._u_seq = (0.0,) * self.horizon
         self._int_err = 0.0
+        self._u_bias = 0.0
+        self._nominal_state = self._state
 
     def update(self, *, time: float, measurement: float) -> float:
         if self._motor is None:
@@ -218,16 +233,55 @@ class ContMPCController:
         self._last_measured_position = measured_position
         self._last_measurement_time = time
 
-        u_seq = self._optimize_sequence(self._state)
+        # --------------------------------------------------
+        # Nominal model rollout (for model-based integrator)
+        # --------------------------------------------------
+        if self._motor is not None:
+            if self._last_voltage is None:
+                # First step: align nominal with measured state
+                self._nominal_state = self._state
+            else:
+                u_last_eff = self._last_voltage
+
+                self._nominal_state = self._predict_next(
+                    self._nominal_state,
+                    u_last_eff,
+                )
+
+        # --------------------------------------------------
+        # Model-based integrator: integrate plant-model residual
+        # --------------------------------------------------
+        if self.use_model_integrator and self.pi_ki > 0.0 and self._motor is not None:
+            residual = self._state[2] - self._nominal_state[2]
+
+            u_last = self._last_voltage or 0.0
+            not_saturated = abs(u_last) < self.voltage_limit - 1e-6
+            if not self.pi_gate_saturation:
+                not_saturated = True
+
+            allow = not_saturated
+            if self.pi_gate_error_band:
+                allow = allow and abs(residual) > self.position_tolerance
+
+            if allow:
+                self._u_bias += self.pi_ki * residual * self.dt
+            elif self.pi_leak_near_setpoint and abs(residual) < self.position_tolerance:
+                self._u_bias *= 0.9
+
+            self._u_bias = _clamp_symmetric(self._u_bias, self.model_bias_limit)
+
+        voltage_bias = self._u_bias if self.use_model_integrator else 0.0
+
+        u_seq = self._optimize_sequence(self._state, voltage_bias=voltage_bias)
         mpc_voltage = u_seq[0]
+        if self.use_model_integrator:
+            mpc_voltage = self._clamp_voltage(mpc_voltage + self._u_bias)
 
         position_error = self.target_lvdt - normalized_measurement
         friction_floor = self._dynamic_friction_compensation(position_error)
 
-        if self.pi_ki > 0.0:
-            # -------------------------------
-            # Integral term update (conditional)
-            # -------------------------------
+        # Legacy error-based PI mode (unchanged behavior) for comparison
+        if (not self.use_model_integrator) and self.pi_ki > 0.0:
             u_last = self._last_voltage or 0.0
             not_saturated = abs(u_last) < self.voltage_limit - 1e-6
             if not self.pi_gate_saturation:
@@ -243,31 +297,32 @@ class ContMPCController:
 
             allow_integration = not_saturated and not blocked
             if self.pi_gate_error_band:
-                # Only suppress integration for truly tiny errors.
-                # Anything outside the tolerance is allowed to drive I-term.
-                allow_integration = allow_integration and abs(e) > self.position_tolerance
+                allow_integration = allow_integration and abs(e) > self.friction_blend_error_low
 
             if allow_integration:
                 self._int_err += e * self.dt
             elif self.pi_leak_near_setpoint and abs(e) < self.position_tolerance:
                 self._int_err *= 0.9
 
-            max_int_state = self.pi_limit / self.pi_ki
+            max_int_state = self.pi_limit / max(self.pi_ki, 1e-9)
             self._int_err = max(-max_int_state, min(max_int_state, self._int_err))
 
-        # Integral contribution with hard output cap
-        u_I = self.pi_ki * self._int_err
-        if u_I > self.pi_limit:
-            u_I = self.pi_limit
-        elif u_I < -self.pi_limit:
-            u_I = -self.pi_limit
+        # Choose integrator contribution
+        if self.use_model_integrator:
+            u_I = self._u_bias
+        else:
+            u_I = self.pi_ki * self._int_err
+            u_I = _clamp_symmetric(u_I, self.pi_limit)
 
         u_pd = (
             self.pd_kp * position_error
             - self.pd_kd * estimated_speed
             + u_I
         )
-        u_raw = self.pd_blend * mpc_voltage + (1.0 - self.pd_blend) * u_pd
+
+        u_nom = self.pd_blend * mpc_voltage + (1.0 - self.pd_blend) * u_pd
+
+        u_raw = u_nom
 
         if (
             abs(self._state[1]) < self._motor.stop_speed_threshold
@@ -414,52 +469,73 @@ class ContMPCController:
         self,
         initial_state: Tuple[float, float, float],
         sequence: Tuple[float, ...],
-    ) -> Tuple[float, Tuple[float, float, float]]:
+        *,
+        voltage_bias: float = 0.0,
+    ) -> Tuple[float, Tuple[float, float, float], float]:
         worst_cost = float("-inf")
         nominal_state: Tuple[float, float, float] | None = None
+        nominal_first_voltage: float | None = None
 
         for index, motor in enumerate(self._prediction_models):
-            cost, state = self._evaluate_sequence_single(initial_state, sequence, motor)
+            cost, state, first_voltage = self._evaluate_sequence_single(
+                initial_state,
+                sequence,
+                motor,
+                voltage_bias=voltage_bias,
+            )
             if index == 0:
                 nominal_state = state
+                nominal_first_voltage = first_voltage
             if cost > worst_cost:
                 worst_cost = cost
 
         if nominal_state is None:
             nominal_state = initial_state
+        if nominal_first_voltage is None:
+            nominal_first_voltage = 0.0
 
-        return worst_cost, nominal_state
+        return worst_cost, nominal_state, nominal_first_voltage
 
     def _evaluate_sequence_single(
         self,
         initial_state: Tuple[float, float, float],
         sequence: Tuple[float, ...],
         motor: BrushedMotorModel,
-    ) -> Tuple[float, Tuple[float, float, float]]:
+        *,
+        voltage_bias: float = 0.0,
+    ) -> Tuple[float, Tuple[float, float, float], float]:
         state = initial_state
         cost = 0.0
         previous_voltage = self._last_voltage
+        first_voltage: float | None = None
 
-        for voltage in sequence:
-            predicted_state = self._predict_next_for_model(state, voltage, motor)
+        for index, voltage in enumerate(sequence):
+            voltage_eff = voltage + voltage_bias
+            if voltage_bias != 0.0:
+                voltage_eff = self._clamp_voltage(voltage_eff)
+
+            predicted_state = self._predict_next_for_model(state, voltage_eff, motor)
             lvdt = self._position_to_measurement(predicted_state[2], motor=motor)
             position_error = self.target_lvdt - lvdt
 
             cost += self.weights.position * position_error * position_error
             cost += self.weights.speed * predicted_state[1] * predicted_state[1]
-            cost += self.weights.voltage * voltage * voltage
+            cost += self.weights.voltage * voltage_eff * voltage_eff
 
             if previous_voltage is not None:
-                delta = voltage - previous_voltage
+                delta = voltage_eff - previous_voltage
                 cost += self.weights.delta_voltage * delta * delta
-            previous_voltage = voltage
+            previous_voltage = voltage_eff
+
+            if index == 0:
+                first_voltage = voltage_eff
 
             friction_floor = self._dynamic_friction_compensation(position_error)
             if (
                 abs(predicted_state[1]) < motor.stop_speed_threshold
                 and abs(position_error) > self.position_tolerance
                 and friction_floor > 0.0
-                and abs(voltage) < friction_floor
+                and abs(voltage_eff) < friction_floor
             ):
                 cost += self.static_friction_penalty
 
@@ -470,11 +546,16 @@ class ContMPCController:
         )
         cost += self.weights.terminal_position * terminal_error * terminal_error
 
-        return cost, state
+        if first_voltage is None:
+            first_voltage = 0.0
+
+        return cost, state, first_voltage
 
     def _optimize_sequence(
         self,
         initial_state: Tuple[float, float, float],
+        *,
+        voltage_bias: float = 0.0,
     ) -> Tuple[float, ...]:
         horizon = self.horizon
         limit = self.voltage_limit
@@ -497,11 +578,19 @@ class ContMPCController:
 
                 up = _clamp_symmetric(base + eps, limit)
                 u[i] = up
-                j_plus, _ = self._evaluate_sequence(initial_state, tuple(u))
+                j_plus, _, _ = self._evaluate_sequence(
+                    initial_state,
+                    tuple(u),
+                    voltage_bias=voltage_bias,
+                )
 
                 down = _clamp_symmetric(base - eps, limit)
                 u[i] = down
-                j_minus, _ = self._evaluate_sequence(initial_state, tuple(u))
+                j_minus, _, _ = self._evaluate_sequence(
+                    initial_state,
+                    tuple(u),
+                    voltage_bias=voltage_bias,
+                )
 
                 u[i] = base
 

@@ -560,6 +560,11 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("PD/MPC blend", pd_blend_spin)
         controls["pd_blend"] = pd_blend_spin
 
+        model_int_checkbox = QtWidgets.QCheckBox("Use model-based integrator")
+        model_int_checkbox.setChecked(defaults.get("use_model_integrator", False))
+        form.addRow("Integrator mode", model_int_checkbox)
+        controls["use_model_integrator"] = model_int_checkbox
+
         pi_ki_spin = self._create_double_spin(
             0.0,
             500.0,
@@ -713,6 +718,11 @@ class ControllerDemo(QtWidgets.QMainWindow):
         )
         form.addRow("PD/MPC blend", pd_blend_spin)
         controls["pd_blend"] = pd_blend_spin
+
+        model_int_checkbox = QtWidgets.QCheckBox("Use model-based integrator")
+        model_int_checkbox.setChecked(defaults.get("use_model_integrator", False))
+        form.addRow("Integrator mode", model_int_checkbox)
+        controls["use_model_integrator"] = model_int_checkbox
 
         pi_ki_spin = self._create_double_spin(
             0.0,
@@ -996,6 +1006,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
             "pi_gate_blocked",
             "pi_gate_error_band",
             "pi_leak_near_setpoint",
+            "use_model_integrator",
         ):
             if key in controls:
                 kwargs[key] = cast(QtWidgets.QCheckBox, controls[key]).isChecked()
