@@ -550,6 +550,16 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Blend error high", blend_high_spin)
         controls["friction_blend_error_high"] = blend_high_spin
 
+        pd_blend_spin = self._create_double_spin(
+            0.0,
+            1.0,
+            0.01,
+            2,
+            defaults.get("pd_blend", 0.7),
+        )
+        form.addRow("PD/MPC blend", pd_blend_spin)
+        controls["pd_blend"] = pd_blend_spin
+
         pi_ki_spin = self._create_double_spin(
             0.001,
             500.0,
@@ -666,6 +676,16 @@ class ControllerDemo(QtWidgets.QMainWindow):
         )
         form.addRow("Blend error high", blend_high_spin)
         controls["friction_blend_error_high"] = blend_high_spin
+
+        pd_blend_spin = self._create_double_spin(
+            0.0,
+            1.0,
+            0.01,
+            2,
+            defaults.get("pd_blend", 0.7),
+        )
+        form.addRow("PD/MPC blend", pd_blend_spin)
+        controls["pd_blend"] = pd_blend_spin
 
         pi_ki_spin = self._create_double_spin(
             0.001,
@@ -897,6 +917,11 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 cast(QtWidgets.QSpinBox, controls["internal_substeps"]).value()
             ),
         }
+
+        if "pd_blend" in controls:
+            kwargs["pd_blend"] = float(
+                cast(QtWidgets.QDoubleSpinBox, controls["pd_blend"]).value()
+            )
 
         if "candidate_count" in controls:
             kwargs["candidate_count"] = int(
