@@ -551,7 +551,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["friction_blend_error_high"] = blend_high_spin
 
         pi_ki_spin = self._create_double_spin(
-            0.0,
+            0.001,
             500.0,
             0.001,
             3,
@@ -668,7 +668,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["friction_blend_error_high"] = blend_high_spin
 
         pi_ki_spin = self._create_double_spin(
-            0.0,
+            0.001,
             500.0,
             0.001,
             3,
