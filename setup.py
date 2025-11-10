@@ -9,7 +9,10 @@ ext_modules = [
     ),
     Pybind11Extension(
         "motor_model._native.continuous_mpc",
-        ["src/motor_model/_native/continuous_mpc.cpp"],
+        [
+            "src/motor_model/_native/continuous_mpc.cpp",
+            "src/motor_model/_native/continuous_mpc_core.cpp",
+        ],
     ),
 ]
 
