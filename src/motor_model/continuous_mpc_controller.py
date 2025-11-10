@@ -43,6 +43,8 @@ class ContMPCController:
         pd_blend: float = 0.7,
         pd_kp: float = 6.0,
         pd_kd: float = 0.4,
+        pi_ki: float = 0.0,
+        pi_limit: float = 5.0,
         opt_iters: int = 10,
         opt_step: float = 0.1,
         opt_eps: float | None = 0.1,
@@ -71,6 +73,10 @@ class ContMPCController:
             raise ValueError("pd_kp must be positive")
         if pd_kd < 0.0:
             raise ValueError("pd_kd must be non-negative")
+        if pi_ki < 0.0:
+            raise ValueError("pi_ki must be non-negative")
+        if pi_limit <= 0.0:
+            raise ValueError("pi_limit must be positive")
         if auto_fc_gain <= 0.0:
             raise ValueError("auto_fc_gain must be positive")
         if auto_fc_floor < 0.0:
@@ -103,6 +109,9 @@ class ContMPCController:
         self.pd_blend = pd_blend
         self.pd_kp = pd_kp
         self.pd_kd = pd_kd
+        self.pi_ki = pi_ki
+        self.pi_limit = abs(pi_limit)
+        self._int_err = 0.0
 
         self.auto_fc_gain = auto_fc_gain
         self.auto_fc_floor = auto_fc_floor
@@ -170,6 +179,7 @@ class ContMPCController:
         self._last_measured_position = position
         self._last_measurement_time = None
         self._u_seq = (0.0,) * self.horizon
+        self._int_err = 0.0
 
     def update(self, *, time: float, measurement: float) -> float:
         if self._motor is None:
@@ -206,7 +216,16 @@ class ContMPCController:
         position_error = self.target_lvdt - normalized_measurement
         friction_floor = self._dynamic_friction_compensation(position_error)
 
-        u_pd = self.pd_kp * position_error - self.pd_kd * estimated_speed
+        if self.pi_ki > 0.0:
+            if self._last_voltage is None or abs(self._last_voltage) < self.voltage_limit - 1e-6:
+                self._int_err += position_error * self.dt
+                self._int_err = max(-self.pi_limit, min(self.pi_limit, self._int_err))
+
+        u_pd = (
+            self.pd_kp * position_error
+            - self.pd_kd * estimated_speed
+            + self.pi_ki * self._int_err
+        )
         u_raw = self.pd_blend * mpc_voltage + (1.0 - self.pd_blend) * u_pd
 
         if (

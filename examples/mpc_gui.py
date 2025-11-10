@@ -483,6 +483,26 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Blend error high", blend_high_spin)
         controls["friction_blend_error_high"] = blend_high_spin
 
+        pi_ki_spin = self._create_double_spin(
+            0.0,
+            5.0,
+            0.001,
+            3,
+            defaults.get("pi_ki", 0.0),
+        )
+        form.addRow("Integral gain", pi_ki_spin)
+        controls["pi_ki"] = pi_ki_spin
+
+        pi_limit_spin = self._create_double_spin(
+            0.1,
+            50.0,
+            0.1,
+            2,
+            defaults.get("pi_limit", 5.0),
+        )
+        form.addRow("Integral limit", pi_limit_spin)
+        controls["pi_limit"] = pi_limit_spin
+
         substeps_spin = self._create_int_spin(
             1, 50, 1, int(defaults["internal_substeps"])
         )
@@ -579,6 +599,26 @@ class ControllerDemo(QtWidgets.QMainWindow):
         )
         form.addRow("Blend error high", blend_high_spin)
         controls["friction_blend_error_high"] = blend_high_spin
+
+        pi_ki_spin = self._create_double_spin(
+            0.0,
+            5.0,
+            0.001,
+            3,
+            defaults.get("pi_ki", 0.0),
+        )
+        form.addRow("Integral gain", pi_ki_spin)
+        controls["pi_ki"] = pi_ki_spin
+
+        pi_limit_spin = self._create_double_spin(
+            0.1,
+            50.0,
+            0.1,
+            2,
+            defaults.get("pi_limit", 5.0),
+        )
+        form.addRow("Integral limit", pi_limit_spin)
+        controls["pi_limit"] = pi_limit_spin
 
         opt_iters_spin = self._create_int_spin(1, 20, 1, int(defaults.get("opt_iters", 4)))
         form.addRow("Optimiser iterations", opt_iters_spin)
@@ -783,6 +823,15 @@ class ControllerDemo(QtWidgets.QMainWindow):
         if "candidate_count" in controls:
             kwargs["candidate_count"] = int(
                 cast(QtWidgets.QSpinBox, controls["candidate_count"]).value()
+            )
+
+        if "pi_ki" in controls:
+            kwargs["pi_ki"] = float(
+                cast(QtWidgets.QDoubleSpinBox, controls["pi_ki"]).value()
+            )
+        if "pi_limit" in controls:
+            kwargs["pi_limit"] = float(
+                cast(QtWidgets.QDoubleSpinBox, controls["pi_limit"]).value()
             )
 
         if "auto_fc_gain" in controls:

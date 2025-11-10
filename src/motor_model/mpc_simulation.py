@@ -336,6 +336,8 @@ def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
         "auto_fc_cap": None,
         "friction_blend_error_low": 0.05,
         "friction_blend_error_high": 0.2,
+        "pi_ki": 0.0,
+        "pi_limit": 5.0,
     }
     kwargs.update(overrides)
     return kwargs
@@ -361,6 +363,8 @@ def build_default_continuous_controller_kwargs(**overrides: object) -> Dict[str,
         "opt_iters": 10,
         "opt_step": 0.1,
         "opt_eps": 0.1,
+        "pi_ki": 0.0,
+        "pi_limit": 5.0,
     }
     kwargs.update(overrides)
     return kwargs
