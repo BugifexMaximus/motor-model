@@ -338,7 +338,7 @@ def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
         "static_friction_penalty": 50.0,
         "internal_substeps": 30,
         "weights": MPCWeights(),
-        "auto_fc_gain": 1.1,
+        "auto_fc_gain": 2.5,
         "auto_fc_floor": 0.0,
         "auto_fc_cap": None,
         "friction_blend_error_low": 0.05,
@@ -346,6 +346,10 @@ def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
         "pd_blend": 0.7,
         "pi_ki": 0.0,
         "pi_limit": 5.0,
+        "pi_gate_saturation": True,
+        "pi_gate_blocked": True,
+        "pi_gate_error_band": True,
+        "pi_leak_near_setpoint": True,
     }
     kwargs.update(overrides)
     return kwargs
@@ -363,7 +367,7 @@ def build_default_continuous_controller_kwargs(**overrides: object) -> Dict[str,
         "static_friction_penalty": 50.0,
         "internal_substeps": 30,
         "weights": MPCWeights(),
-        "auto_fc_gain": 0.4,
+        "auto_fc_gain": 2.5,
         "auto_fc_floor": 0.0,
         "auto_fc_cap": None,
         "friction_blend_error_low": 0.2,
@@ -374,6 +378,10 @@ def build_default_continuous_controller_kwargs(**overrides: object) -> Dict[str,
         "pd_blend": 0.7,
         "pi_ki": 0.0,
         "pi_limit": 5.0,
+        "pi_gate_saturation": True,
+        "pi_gate_blocked": True,
+        "pi_gate_error_band": True,
+        "pi_leak_near_setpoint": True,
     }
     kwargs.update(overrides)
     return kwargs

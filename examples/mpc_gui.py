@@ -488,7 +488,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 1.1))
+        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 2.5))
         form.addRow("Auto friction gain", auto_gain_spin)
         controls["auto_fc_gain"] = auto_gain_spin
 
@@ -579,6 +579,33 @@ class ControllerDemo(QtWidgets.QMainWindow):
         )
         form.addRow("Integral limit", pi_limit_spin)
         controls["pi_limit"] = pi_limit_spin
+
+        pi_options_widget = QtWidgets.QWidget()
+        pi_options_layout = QtWidgets.QVBoxLayout(pi_options_widget)
+        pi_options_layout.setContentsMargins(0, 0, 0, 0)
+        pi_options_layout.setSpacing(2)
+
+        pi_gate_saturation = QtWidgets.QCheckBox("Integrate when not saturated")
+        pi_gate_saturation.setChecked(defaults.get("pi_gate_saturation", True))
+        pi_options_layout.addWidget(pi_gate_saturation)
+        controls["pi_gate_saturation"] = pi_gate_saturation
+
+        pi_gate_blocked = QtWidgets.QCheckBox("Integrate when not blocked")
+        pi_gate_blocked.setChecked(defaults.get("pi_gate_blocked", True))
+        pi_options_layout.addWidget(pi_gate_blocked)
+        controls["pi_gate_blocked"] = pi_gate_blocked
+
+        pi_gate_error = QtWidgets.QCheckBox("Require large error to integrate")
+        pi_gate_error.setChecked(defaults.get("pi_gate_error_band", True))
+        pi_options_layout.addWidget(pi_gate_error)
+        controls["pi_gate_error_band"] = pi_gate_error
+
+        pi_leak_checkbox = QtWidgets.QCheckBox("Leak integral near setpoint")
+        pi_leak_checkbox.setChecked(defaults.get("pi_leak_near_setpoint", True))
+        pi_options_layout.addWidget(pi_leak_checkbox)
+        controls["pi_leak_near_setpoint"] = pi_leak_checkbox
+
+        form.addRow("Integral heuristics", pi_options_widget)
 
         substeps_spin = self._create_int_spin(
             1, 50, 1, int(defaults["internal_substeps"])
@@ -615,7 +642,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 1.1))
+        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 2.5))
         form.addRow("Auto friction gain", auto_gain_spin)
         controls["auto_fc_gain"] = auto_gain_spin
 
@@ -706,6 +733,33 @@ class ControllerDemo(QtWidgets.QMainWindow):
         )
         form.addRow("Integral limit", pi_limit_spin)
         controls["pi_limit"] = pi_limit_spin
+
+        pi_options_widget = QtWidgets.QWidget()
+        pi_options_layout = QtWidgets.QVBoxLayout(pi_options_widget)
+        pi_options_layout.setContentsMargins(0, 0, 0, 0)
+        pi_options_layout.setSpacing(2)
+
+        pi_gate_saturation = QtWidgets.QCheckBox("Integrate when not saturated")
+        pi_gate_saturation.setChecked(defaults.get("pi_gate_saturation", True))
+        pi_options_layout.addWidget(pi_gate_saturation)
+        controls["pi_gate_saturation"] = pi_gate_saturation
+
+        pi_gate_blocked = QtWidgets.QCheckBox("Integrate when not blocked")
+        pi_gate_blocked.setChecked(defaults.get("pi_gate_blocked", True))
+        pi_options_layout.addWidget(pi_gate_blocked)
+        controls["pi_gate_blocked"] = pi_gate_blocked
+
+        pi_gate_error = QtWidgets.QCheckBox("Require large error to integrate")
+        pi_gate_error.setChecked(defaults.get("pi_gate_error_band", True))
+        pi_options_layout.addWidget(pi_gate_error)
+        controls["pi_gate_error_band"] = pi_gate_error
+
+        pi_leak_checkbox = QtWidgets.QCheckBox("Leak integral near setpoint")
+        pi_leak_checkbox.setChecked(defaults.get("pi_leak_near_setpoint", True))
+        pi_options_layout.addWidget(pi_leak_checkbox)
+        controls["pi_leak_near_setpoint"] = pi_leak_checkbox
+
+        form.addRow("Integral heuristics", pi_options_widget)
 
         opt_iters_spin = self._create_int_spin(1, 20, 1, int(defaults.get("opt_iters", 4)))
         form.addRow("Optimiser iterations", opt_iters_spin)
@@ -936,6 +990,15 @@ class ControllerDemo(QtWidgets.QMainWindow):
             kwargs["pi_limit"] = float(
                 cast(QtWidgets.QDoubleSpinBox, controls["pi_limit"]).value()
             )
+
+        for key in (
+            "pi_gate_saturation",
+            "pi_gate_blocked",
+            "pi_gate_error_band",
+            "pi_leak_near_setpoint",
+        ):
+            if key in controls:
+                kwargs[key] = cast(QtWidgets.QCheckBox, controls[key]).isChecked()
 
         if "auto_fc_gain" in controls:
             kwargs.update(
