@@ -109,7 +109,7 @@ def test_mpc_adapts_to_new_parameter_sets():
 
     assert controller._motor is new_motor
     expected_friction = min(
-        new_motor.static_friction * new_motor.resistance / new_motor._kt * 1.1,
+        new_motor.static_friction * new_motor.resistance / new_motor._kt * 2.5,
         controller.voltage_limit,
     )
     assert math.isclose(controller.friction_compensation, expected_friction)

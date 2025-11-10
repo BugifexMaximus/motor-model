@@ -488,7 +488,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 1.1))
+        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 2.5))
         form.addRow("Auto friction gain", auto_gain_spin)
         controls["auto_fc_gain"] = auto_gain_spin
 
@@ -642,7 +642,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 1.1))
+        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 2.5))
         form.addRow("Auto friction gain", auto_gain_spin)
         controls["auto_fc_gain"] = auto_gain_spin
 

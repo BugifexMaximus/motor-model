@@ -24,7 +24,7 @@ class MPCWeights:
     position: float = 300.0
     speed: float = 0.5
     voltage: float = 0.02
-    delta_voltage: float = 0.75
+    delta_voltage: float = 0.25
     terminal_position: float = 700.0
 
 

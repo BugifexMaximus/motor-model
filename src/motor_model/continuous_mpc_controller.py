@@ -31,7 +31,7 @@ class ContMPCController:
         position_tolerance: float = 0.02,
         static_friction_penalty: float = 50.0,
         friction_compensation: float | None = None,
-        auto_fc_gain: float = 0.4,
+        auto_fc_gain: float = 2.5,
         auto_fc_floor: float = 0.0,
         auto_fc_cap: float | None = None,
         friction_blend_error_low: float = 0.2,

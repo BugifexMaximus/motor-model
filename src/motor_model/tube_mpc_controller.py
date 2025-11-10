@@ -316,7 +316,7 @@ class TubeMPCController:
             return min(friction_compensation, self.voltage_limit)
 
         min_motion_voltage = motor.static_friction * motor.resistance / motor._kt
-        return min(min_motion_voltage * 1.1, self.voltage_limit)
+        return min(min_motion_voltage * 2.5, self.voltage_limit)
 
     def _compute_error_bounds(
         self, motor: BrushedMotorModel
