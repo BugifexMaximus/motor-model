@@ -45,6 +45,10 @@ class ContMPCController:
         pd_kd: float = 0.4,
         pi_ki: float = 0.0,
         pi_limit: float = 5.0,
+        pi_gate_saturation: bool = True,
+        pi_gate_blocked: bool = True,
+        pi_gate_error_band: bool = True,
+        pi_leak_near_setpoint: bool = True,
         opt_iters: int = 10,
         opt_step: float = 0.1,
         opt_eps: float | None = 0.1,
@@ -111,6 +115,10 @@ class ContMPCController:
         self.pd_kd = pd_kd
         self.pi_ki = pi_ki
         self.pi_limit = abs(pi_limit)
+        self.pi_gate_saturation = pi_gate_saturation
+        self.pi_gate_blocked = pi_gate_blocked
+        self.pi_gate_error_band = pi_gate_error_band
+        self.pi_leak_near_setpoint = pi_leak_near_setpoint
         self._int_err = 0.0
 
         self.auto_fc_gain = auto_fc_gain
@@ -217,14 +225,45 @@ class ContMPCController:
         friction_floor = self._dynamic_friction_compensation(position_error)
 
         if self.pi_ki > 0.0:
-            if self._last_voltage is None or abs(self._last_voltage) < self.voltage_limit - 1e-6:
-                self._int_err += position_error * self.dt
-                self._int_err = max(-self.pi_limit, min(self.pi_limit, self._int_err))
+            # -------------------------------
+            # Integral term update (conditional)
+            # -------------------------------
+            u_last = self._last_voltage or 0.0
+            not_saturated = abs(u_last) < self.voltage_limit - 1e-6
+            if not self.pi_gate_saturation:
+                not_saturated = True
+
+            e = position_error
+
+            blocked = False
+            if self.pi_gate_blocked and self._motor is not None:
+                v_small = self._motor.stop_speed_threshold * 0.5
+                u_block = 0.3 * self.voltage_limit
+                blocked = abs(estimated_speed) < v_small and abs(u_last) > u_block
+
+            allow_integration = not_saturated and not blocked
+            if self.pi_gate_error_band:
+                allow_integration = allow_integration and abs(e) > self.friction_blend_error_low
+
+            if allow_integration:
+                self._int_err += e * self.dt
+            elif self.pi_leak_near_setpoint and abs(e) < self.position_tolerance:
+                self._int_err *= 0.9
+
+            max_int_state = self.pi_limit / self.pi_ki
+            self._int_err = max(-max_int_state, min(max_int_state, self._int_err))
+
+        # Integral contribution with hard output cap
+        u_I = self.pi_ki * self._int_err
+        if u_I > self.pi_limit:
+            u_I = self.pi_limit
+        elif u_I < -self.pi_limit:
+            u_I = -self.pi_limit
 
         u_pd = (
             self.pd_kp * position_error
             - self.pd_kd * estimated_speed
-            + self.pi_ki * self._int_err
+            + u_I
         )
         u_raw = self.pd_blend * mpc_voltage + (1.0 - self.pd_blend) * u_pd
 

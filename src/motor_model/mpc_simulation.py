@@ -346,6 +346,10 @@ def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
         "pd_blend": 0.7,
         "pi_ki": 0.0,
         "pi_limit": 5.0,
+        "pi_gate_saturation": True,
+        "pi_gate_blocked": True,
+        "pi_gate_error_band": True,
+        "pi_leak_near_setpoint": True,
     }
     kwargs.update(overrides)
     return kwargs
@@ -374,6 +378,10 @@ def build_default_continuous_controller_kwargs(**overrides: object) -> Dict[str,
         "pd_blend": 0.7,
         "pi_ki": 0.0,
         "pi_limit": 5.0,
+        "pi_gate_saturation": True,
+        "pi_gate_blocked": True,
+        "pi_gate_error_band": True,
+        "pi_leak_near_setpoint": True,
     }
     kwargs.update(overrides)
     return kwargs
