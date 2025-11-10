@@ -137,6 +137,7 @@ class MotorSimulation:
         self.speed = 0.0
         self.position = 0.0
         self.disturbance_torque = 0.0
+        self._manual_torque = 0.0
 
         initial_measurement = self.motor._lvdt_measurement(self.position)
         self.controller.reset(
@@ -217,6 +218,13 @@ class MotorSimulation:
         disturbance = _TorqueDisturbance(start=start, end=start + duration, torque=torque)
         self._torque_disturbances.append(disturbance)
 
+    def set_manual_torque(self, torque: float) -> None:
+        """Set a continuously applied torque disturbance."""
+
+        if not math.isfinite(torque):
+            raise ValueError("torque must be a finite value")
+        self._manual_torque = float(torque)
+
     # ------------------------------------------------------------------
     # Internal mechanics
     # ------------------------------------------------------------------
@@ -281,20 +289,19 @@ class MotorSimulation:
     def _active_disturbance_torque(self) -> float:
         """Return the total torque of disturbances active at the current time."""
 
-        if not self._torque_disturbances:
-            return 0.0
+        scheduled = 0.0
+        if self._torque_disturbances:
+            now = self.time
+            remaining: list[_TorqueDisturbance] = []
+            for disturbance in self._torque_disturbances:
+                if now >= disturbance.end:
+                    continue
+                if now >= disturbance.start:
+                    scheduled += disturbance.torque
+                remaining.append(disturbance)
+            self._torque_disturbances = remaining
 
-        now = self.time
-        active = 0.0
-        remaining: list[_TorqueDisturbance] = []
-        for disturbance in self._torque_disturbances:
-            if now >= disturbance.end:
-                continue
-            if now >= disturbance.start:
-                active += disturbance.torque
-            remaining.append(disturbance)
-        self._torque_disturbances = remaining
-        return active
+        return self._manual_torque + scheduled
 
 
 def build_default_motor_kwargs(**overrides: float) -> Dict[str, float]:
@@ -336,6 +343,9 @@ def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
         "auto_fc_cap": None,
         "friction_blend_error_low": 0.05,
         "friction_blend_error_high": 0.2,
+        "pd_blend": 0.7,
+        "pi_ki": 0.0,
+        "pi_limit": 5.0,
     }
     kwargs.update(overrides)
     return kwargs
@@ -361,6 +371,9 @@ def build_default_continuous_controller_kwargs(**overrides: object) -> Dict[str,
         "opt_iters": 10,
         "opt_step": 0.1,
         "opt_eps": 0.1,
+        "pd_blend": 0.7,
+        "pi_ki": 0.0,
+        "pi_limit": 5.0,
     }
     kwargs.update(overrides)
     return kwargs

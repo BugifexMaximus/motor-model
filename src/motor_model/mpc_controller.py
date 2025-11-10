@@ -128,6 +128,8 @@ class LVDTMPCController:
         pd_blend: float = 0.7,
         pd_kp: float = 6.0,
         pd_kd: float = 0.4,
+        pi_ki: float = 0.0,
+        pi_limit: float = 5.0,
     ) -> None:
         if dt <= 0:
             raise ValueError("dt must be positive")
@@ -157,6 +159,10 @@ class LVDTMPCController:
             raise ValueError("pd_kp must be positive")
         if pd_kd < 0.0:
             raise ValueError("pd_kd must be non-negative")
+        if pi_ki < 0.0:
+            raise ValueError("pi_ki must be non-negative")
+        if pi_limit <= 0.0:
+            raise ValueError("pi_limit must be positive")
         if auto_fc_gain <= 0.0:
             raise ValueError("auto_fc_gain must be positive")
         if auto_fc_floor < 0.0:
@@ -184,6 +190,9 @@ class LVDTMPCController:
         self.pd_blend = pd_blend
         self.pd_kp = pd_kp
         self.pd_kd = pd_kd
+        self.pi_ki = pi_ki
+        self.pi_limit = abs(pi_limit)
+        self._int_err = 0.0
         self.auto_fc_gain = auto_fc_gain
         self.auto_fc_floor = auto_fc_floor
         self.auto_fc_cap = auto_fc_cap
@@ -266,6 +275,7 @@ class LVDTMPCController:
         self._last_voltage = None
         self._last_measured_position = position
         self._last_measurement_time = None
+        self._int_err = 0.0
 
     def update(self, *, time: float, measurement: float) -> float:
         """Return the next control action using the latest LVDT measurement."""
@@ -308,6 +318,10 @@ class LVDTMPCController:
 
         position_error = self.target_lvdt - normalized_measurement
         friction_floor = self._dynamic_friction_compensation(position_error)
+        if self.pi_ki > 0.0:
+            if self._last_voltage is None or abs(self._last_voltage) < self.voltage_limit - 1e-6:
+                self._int_err += position_error * self.dt
+                self._int_err = max(-self.pi_limit, min(self.pi_limit, self._int_err))
         if (
             abs(self._state[1]) < self._motor.stop_speed_threshold
             and abs(position_error) > self.position_tolerance
@@ -318,7 +332,11 @@ class LVDTMPCController:
 
         best_voltage = self._clamp_voltage(best_voltage)
 
-        u_pd = self.pd_kp * position_error - self.pd_kd * estimated_speed
+        u_pd = (
+            self.pd_kp * position_error
+            - self.pd_kd * estimated_speed
+            + self.pi_ki * self._int_err
+        )
         blended_voltage = (
             self.pd_blend * best_voltage + (1.0 - self.pd_blend) * u_pd
         )

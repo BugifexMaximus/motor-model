@@ -191,3 +191,22 @@ def test_torque_disturbance_applies_and_clears():
     history = sim.history()
     assert max(history.disturbance) == pytest.approx(0.03, rel=1e-6)
     assert abs(history.disturbance[-1]) < 1e-6
+
+
+def test_manual_torque_overrides_schedule_cleanly():
+    sim = _make_simulation()
+
+    sim.set_manual_torque(0.2)
+    sim.step(1)
+    assert sim.disturbance_torque == pytest.approx(0.2, rel=1e-6)
+
+    sim.apply_torque_disturbance(0.1, 0.05)
+    sim.step(1)
+    assert sim.disturbance_torque == pytest.approx(0.3, rel=1e-6)
+
+    sim.set_manual_torque(-0.4)
+    sim.step(1)
+    assert sim.disturbance_torque == pytest.approx(-0.3, rel=1e-6)
+
+    with pytest.raises(ValueError):
+        sim.set_manual_torque(float("nan"))
