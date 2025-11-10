@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Tuple, Literal
+from typing import Deque, Dict, Literal, Tuple
 
 from ._mpc_common import MPCWeights
 from .brushed_motor import BrushedMotorModel, rpm_per_volt_to_rad_per_sec_per_volt
@@ -31,6 +31,7 @@ class SimulationState:
     speed: float
     position: float
     voltage: float
+    disturbance: float
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,16 @@ class SimulationHistory:
     voltage: Tuple[float, ...]
     speed: Tuple[float, ...]
     current: Tuple[float, ...]
+    disturbance: Tuple[float, ...]
+
+
+@dataclass
+class _TorqueDisturbance:
+    """Internal representation of a scheduled torque disturbance."""
+
+    start: float
+    end: float
+    torque: float
 
 
 class MotorSimulation:
@@ -125,6 +136,7 @@ class MotorSimulation:
         self.current = 0.0
         self.speed = 0.0
         self.position = 0.0
+        self.disturbance_torque = 0.0
 
         initial_measurement = self.motor._lvdt_measurement(self.position)
         self.controller.reset(
@@ -140,6 +152,8 @@ class MotorSimulation:
         self.voltage_history: Deque[float] = deque([self.voltage], maxlen=self._history_max_points)
         self.speed_history: Deque[float] = deque([self.speed], maxlen=self._history_max_points)
         self.current_history: Deque[float] = deque([self.current], maxlen=self._history_max_points)
+        self.disturbance_history: Deque[float] = deque([self.disturbance_torque], maxlen=self._history_max_points)
+        self._torque_disturbances: list[_TorqueDisturbance] = []
 
     # ------------------------------------------------------------------
     # Public API used by the GUI and the unit tests
@@ -177,6 +191,7 @@ class MotorSimulation:
             speed=self.speed,
             position=self.position,
             voltage=self.voltage,
+            disturbance=self.disturbance_torque,
         )
 
     def history(self) -> SimulationHistory:
@@ -187,7 +202,20 @@ class MotorSimulation:
             voltage=tuple(self.voltage_history),
             speed=tuple(self.speed_history),
             current=tuple(self.current_history),
+            disturbance=tuple(self.disturbance_history),
         )
+
+    def apply_torque_disturbance(self, torque: float, duration: float) -> None:
+        """Schedule a constant torque disturbance applied immediately."""
+
+        if not math.isfinite(torque):
+            raise ValueError("torque must be a finite value")
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("duration must be a positive finite value")
+
+        start = self.time
+        disturbance = _TorqueDisturbance(start=start, end=start + duration, torque=torque)
+        self._torque_disturbances.append(disturbance)
 
     # ------------------------------------------------------------------
     # Internal mechanics
@@ -195,13 +223,15 @@ class MotorSimulation:
     def _single_step(self) -> None:
         dt = self.plant_dt
 
+        self.disturbance_torque = self._active_disturbance_torque()
+
         back_emf = self.motor._ke * self.speed
         di_dt = (self.voltage - self.motor.resistance * self.current - back_emf) / self.motor.inductance
         self.current += di_dt * dt
 
         electromagnetic_torque = self.motor._kt * self.current
         spring_torque = self.motor._spring_torque(self.position)
-        available_torque = electromagnetic_torque - spring_torque
+        available_torque = electromagnetic_torque - spring_torque - self.disturbance_torque
 
         if (
             abs(self.speed) < self.motor.stop_speed_threshold
@@ -225,6 +255,7 @@ class MotorSimulation:
         self.voltage_history.append(self.voltage)
         self.speed_history.append(self.speed)
         self.current_history.append(self.current)
+        self.disturbance_history.append(self.disturbance_torque)
 
         self._steps_since_measurement += 1
         if self._steps_since_measurement >= self.measurement_steps:
@@ -245,6 +276,25 @@ class MotorSimulation:
             self.voltage_history.popleft()
             self.speed_history.popleft()
             self.current_history.popleft()
+            self.disturbance_history.popleft()
+
+    def _active_disturbance_torque(self) -> float:
+        """Return the total torque of disturbances active at the current time."""
+
+        if not self._torque_disturbances:
+            return 0.0
+
+        now = self.time
+        active = 0.0
+        remaining: list[_TorqueDisturbance] = []
+        for disturbance in self._torque_disturbances:
+            if now >= disturbance.end:
+                continue
+            if now >= disturbance.start:
+                active += disturbance.torque
+            remaining.append(disturbance)
+        self._torque_disturbances = remaining
+        return active
 
 
 def build_default_motor_kwargs(**overrides: float) -> Dict[str, float]:

@@ -174,3 +174,20 @@ def test_controller_model_parameters_can_differ_from_physical():
 
     state = sim.state()
     assert math.isfinite(state.position)
+
+
+def test_torque_disturbance_applies_and_clears():
+    sim = _make_simulation()
+
+    sim.apply_torque_disturbance(0.03, 0.05)
+    sim.step(1)
+
+    assert sim.disturbance_torque == pytest.approx(0.03, rel=1e-6)
+
+    sim.run_for(0.2)
+
+    assert abs(sim.disturbance_torque) < 1e-6
+
+    history = sim.history()
+    assert max(history.disturbance) == pytest.approx(0.03, rel=1e-6)
+    assert abs(history.disturbance[-1]) < 1e-6
