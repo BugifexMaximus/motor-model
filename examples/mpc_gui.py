@@ -43,7 +43,7 @@ class TorqueDisturbanceDialog(QtWidgets.QDialog):
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Apply torque disturbance")
+        self.setWindowTitle("Schedule torque disturbance")
         self.setModal(True)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -58,18 +58,18 @@ class TorqueDisturbanceDialog(QtWidgets.QDialog):
         layout.addLayout(form)
 
         self.torque_spin = QtWidgets.QDoubleSpinBox()
-        self.torque_spin.setDecimals(4)
-        self.torque_spin.setRange(-0.5, 0.5)
-        self.torque_spin.setSingleStep(0.001)
-        self.torque_spin.setValue(0.02)
+        self.torque_spin.setDecimals(3)
+        self.torque_spin.setRange(-10.0, 10.0)
+        self.torque_spin.setSingleStep(0.01)
+        self.torque_spin.setValue(0.1)
         self.torque_spin.setSuffix(" N·m")
         form.addRow("Torque", self.torque_spin)
 
         self.duration_spin = QtWidgets.QDoubleSpinBox()
         self.duration_spin.setDecimals(3)
-        self.duration_spin.setRange(0.01, 5.0)
+        self.duration_spin.setRange(0.01, 10.0)
         self.duration_spin.setSingleStep(0.01)
-        self.duration_spin.setValue(0.1)
+        self.duration_spin.setValue(0.2)
         self.duration_spin.setSuffix(" s")
         form.addRow("Duration", self.duration_spin)
 
@@ -87,6 +87,71 @@ class TorqueDisturbanceDialog(QtWidgets.QDialog):
         return float(self.duration_spin.value())
 
 
+class ManualTorquePad(QtWidgets.QDialog):
+    """Floating widget that lets the user drag in a continuous torque."""
+
+    torqueChanged = QtCore.pyqtSignal(float)
+
+    def __init__(
+        self,
+        *,
+        torque_limit: float = 5.0,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Manual torque pad")
+        self.setModal(False)
+        self._torque_limit = abs(torque_limit)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        description = QtWidgets.QLabel(
+            "Click and drag the slider to apply a manual disturbance. "
+            "Releasing the mouse returns the torque to zero."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self._value_label = QtWidgets.QLabel("+0.000 N·m")
+        self._value_label.setAlignment(QtCore.Qt.AlignCenter)
+
+        self._slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._slider.setRange(-1000, 1000)
+        self._slider.setTracking(True)
+        self._slider.setValue(0)
+
+        layout.addWidget(self._slider)
+        layout.addWidget(self._value_label)
+
+        self._slider.valueChanged.connect(self._on_slider_changed)
+        self._slider.sliderReleased.connect(self._on_slider_released)
+
+    def reset(self) -> None:
+        """Return the widget to the neutral position without emitting a spike."""
+
+        self._set_slider_value(0)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self.reset()
+        super().closeEvent(event)
+
+    def _on_slider_changed(self, raw_value: int) -> None:
+        torque = self._torque_limit * raw_value / 1000.0
+        self._value_label.setText(f"{torque:+.3f} N·m")
+        self.torqueChanged.emit(torque)
+
+    def _on_slider_released(self) -> None:
+        self._set_slider_value(0)
+
+    def _set_slider_value(self, raw_value: int) -> None:
+        if self._slider.value() == raw_value:
+            self._on_slider_changed(raw_value)
+            return
+        with QtCore.QSignalBlocker(self._slider):
+            self._slider.setValue(raw_value)
+        self._on_slider_changed(raw_value)
+
+
 class ControllerDemo(QtWidgets.QMainWindow):
     """Main application window."""
 
@@ -98,6 +163,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self._setup_in_progress = True
         self._block_updates = False
         self.simulation: MotorSimulation | None = None
+        self._manual_torque_dialog: ManualTorquePad | None = None
+        self._manual_torque_limit = 5.0
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -784,8 +851,19 @@ class ControllerDemo(QtWidgets.QMainWindow):
         box = QtWidgets.QGroupBox("Disturbances")
         layout = QtWidgets.QVBoxLayout(box)
 
+        manual_button = QtWidgets.QPushButton("Manual torque pad…")
+        manual_button.clicked.connect(self._on_manual_torque_pad_clicked)
+        layout.addWidget(manual_button, alignment=QtCore.Qt.AlignLeft)
+
+        manual_description = QtWidgets.QLabel(
+            "Open a floating widget that lets you drag a continuous torque "
+            "disturbance into the plant."
+        )
+        manual_description.setWordWrap(True)
+        layout.addWidget(manual_description)
+
         description = QtWidgets.QLabel(
-            "Apply external torques to observe how the controller reacts."
+            "Schedule a rectangular torque pulse to test disturbance rejection."
         )
         description.setWordWrap(True)
         layout.addWidget(description)
@@ -934,6 +1012,14 @@ class ControllerDemo(QtWidgets.QMainWindow):
         if self._setup_in_progress:
             return
 
+        if self.simulation is not None:
+            try:
+                self.simulation.set_manual_torque(0.0)
+            except ValueError:
+                pass
+        if self._manual_torque_dialog is not None:
+            self._manual_torque_dialog.reset()
+
         motor_kwargs = {}
         for name, control in self.motor_controls.items():
             value = float(control.value())
@@ -1051,6 +1137,35 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.current_label.setText(f"{self.simulation.current:0.3f} A")
         self.voltage_label.setText(f"{self.simulation.voltage:0.3f} V")
         self.disturbance_label.setText(f"{self.simulation.disturbance_torque:0.4f} N·m")
+
+    def _on_manual_torque_pad_clicked(self) -> None:
+        if not self._manual_torque_dialog:
+            self._manual_torque_dialog = ManualTorquePad(
+                torque_limit=self._manual_torque_limit, parent=self
+            )
+            self._manual_torque_dialog.torqueChanged.connect(self._on_manual_torque_changed)
+            self._manual_torque_dialog.finished.connect(self._on_manual_torque_pad_closed)
+        self._manual_torque_dialog.show()
+        self._manual_torque_dialog.raise_()
+        self._manual_torque_dialog.activateWindow()
+
+    def _on_manual_torque_changed(self, torque: float) -> None:
+        if not self.simulation:
+            return
+        try:
+            self.simulation.set_manual_torque(torque)
+        except ValueError:
+            return
+
+    def _on_manual_torque_pad_closed(self, _result: int) -> None:  # noqa: ARG002
+        if self.simulation:
+            try:
+                self.simulation.set_manual_torque(0.0)
+            except ValueError:
+                pass
+        if self._manual_torque_dialog is not None:
+            self._manual_torque_dialog.deleteLater()
+            self._manual_torque_dialog = None
 
     def _on_apply_torque_clicked(self) -> None:
         if not self.simulation:
