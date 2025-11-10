@@ -350,6 +350,7 @@ def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
         "pi_gate_blocked": True,
         "pi_gate_error_band": True,
         "pi_leak_near_setpoint": True,
+        "use_model_integrator": False,
     }
     kwargs.update(overrides)
     return kwargs
@@ -382,6 +383,7 @@ def build_default_continuous_controller_kwargs(**overrides: object) -> Dict[str,
         "pi_gate_blocked": True,
         "pi_gate_error_band": True,
         "pi_leak_near_setpoint": True,
+        "use_model_integrator": False,
     }
     kwargs.update(overrides)
     return kwargs
