@@ -15,6 +15,9 @@ from motor_model._mpc_common import MPCWeights
 from motor_model._native.continuous_mpc import ContMPCController as NativeContMPC
 
 
+SUPPLY_BUS_VOLTAGE = 28.0
+
+
 def make_motor(**overrides: float) -> BrushedMotorModel:
     params = {
         "lvdt_noise_std": 0.0,
@@ -83,7 +86,13 @@ def controller_pair() -> tuple[PyContMPC, NativeContMPC]:
     return instantiate_controllers(motor)
 
 
-def compare_sequences(py_controller: PyContMPC, native_controller: NativeContMPC, steps: int) -> None:
+def compare_sequences(
+    py_controller: PyContMPC,
+    native_controller: NativeContMPC,
+    steps: int,
+    *,
+    duty_cycle: bool = False,
+) -> None:
     dt = py_controller.dt
     last_time = py_controller._last_measurement_time or 0.0
     time = last_time + dt
@@ -101,7 +110,11 @@ def compare_sequences(py_controller: PyContMPC, native_controller: NativeContMPC
         )
         time += dt
 
-    assert outputs_native == pytest.approx(outputs_py, rel=1e-9, abs=1e-9)
+    if duty_cycle:
+        scaled_native = [value * SUPPLY_BUS_VOLTAGE for value in outputs_native]
+        assert scaled_native == pytest.approx(outputs_py, rel=1e-9, abs=1e-9)
+    else:
+        assert outputs_native == pytest.approx(outputs_py, rel=1e-9, abs=1e-9)
     assert native_controller._state == pytest.approx(py_controller._state, rel=1e-9, abs=1e-9)
     assert native_controller._u_seq == pytest.approx(py_controller._u_seq, rel=1e-9, abs=1e-9)
     assert native_controller._int_err == pytest.approx(py_controller._int_err, rel=1e-9, abs=1e-9)
@@ -141,6 +154,12 @@ def test_native_controller_matches_python() -> None:
     native_controller.pi_ki = 0.62
     py_controller.pi_gate_blocked = True
     native_controller.pi_gate_blocked = True
+    py_controller.pi_gate_saturation = True
+    native_controller.pi_gate_saturation = True
+    py_controller.pi_gate_error_band = False
+    native_controller.pi_gate_error_band = False
+    py_controller.pi_leak_near_setpoint = True
+    native_controller.pi_leak_near_setpoint = True
 
     py_weights = py_controller.weights
     native_weights = native_controller.weights
@@ -196,3 +215,129 @@ def test_native_controller_matches_python() -> None:
     )
 
     compare_sequences(py_controller, native_controller, steps=7)
+
+
+def test_parameter_mutations_cover_all_attributes() -> None:
+    py_controller, native_controller = controller_pair()
+
+    py_controller.reset(
+        initial_measurement=-0.12,
+        initial_current=0.05,
+        initial_speed=-0.08,
+    )
+    native_controller.reset(
+        initial_measurement=-0.12,
+        initial_current=0.05,
+        initial_speed=-0.08,
+    )
+
+    param_updates = [
+        ("dt", 0.012),
+        ("horizon", 6),
+        ("voltage_limit", 6.5),
+        ("target_lvdt", -0.25),
+        ("position_tolerance", 0.015),
+        ("static_friction_penalty", 42.0),
+        ("internal_substeps", 9),
+        ("robust_electrical", True),
+        ("inductance_rel_uncertainty", 0.15),
+        ("pd_blend", 0.35),
+        ("pd_kp", 4.7),
+        ("pd_kd", 0.33),
+        ("pi_ki", 0.52),
+        ("pi_limit", 3.6),
+        ("pi_gate_saturation", True),
+        ("pi_gate_blocked", True),
+        ("pi_gate_error_band", False),
+        ("pi_leak_near_setpoint", True),
+        ("use_model_integrator", False),
+        ("auto_fc_gain", 1.6),
+        ("auto_fc_floor", 0.07),
+        ("friction_blend_error_low", 0.08),
+        ("friction_blend_error_high", 0.45),
+        ("model_bias_limit", 2.4),
+        ("_opt_iters", 5),
+        ("_opt_step", 0.09),
+        ("_opt_eps", 0.04),
+        ("_electrical_alpha", 0.6),
+    ]
+
+    for attribute, value in param_updates:
+        setattr(py_controller, attribute, value)
+        setattr(native_controller, attribute, value)
+
+    # Optional parameters can be cleared and reassigned.
+    py_controller.auto_fc_cap = None
+    native_controller.auto_fc_cap = None
+    py_controller.auto_fc_cap = 0.6
+    native_controller.auto_fc_cap = 0.6
+
+    py_controller.friction_compensation = 0.35
+    native_controller.friction_compensation = 0.35
+
+    weight_updates = dict(
+        position=310.0,
+        speed=1.25,
+        voltage=0.06,
+        delta_voltage=0.5,
+        terminal_position=680.0,
+    )
+    py_weights = py_controller.weights
+    native_weights = native_controller.weights
+    for attribute, value in weight_updates.items():
+        setattr(py_weights, attribute, value)
+        setattr(native_weights, attribute, value)
+
+    py_controller.reset(
+        initial_measurement=0.18,
+        initial_current=-0.02,
+        initial_speed=0.11,
+    )
+    native_controller.reset(
+        initial_measurement=0.18,
+        initial_current=-0.02,
+        initial_speed=0.11,
+    )
+
+    # Direct integrator state and cached friction parameters remain writable.
+    py_controller._int_err = 0.12
+    native_controller._int_err = 0.12
+    py_controller._u_bias = -0.18
+    native_controller._u_bias = -0.18
+    py_controller._user_friction_compensation_request = 0.31
+    native_controller._user_friction_compensation_request = 0.31
+    py_controller._auto_friction_compensation = 0.22
+    native_controller._auto_friction_compensation = 0.22
+    py_controller._active_user_friction_compensation = 0.27
+    native_controller._active_user_friction_compensation = 0.27
+    py_controller._last_voltage = 0.9
+    native_controller._last_voltage = 0.9
+    py_controller._last_measured_position = -0.03
+    native_controller._last_measured_position = -0.03
+    py_controller._last_measurement_time = 0.05
+    native_controller._last_measurement_time = 0.05
+
+    compare_sequences(py_controller, native_controller, steps=4)
+
+
+def test_duty_cycle_output_matches_scaled_voltage() -> None:
+    py_controller, native_controller = controller_pair()
+
+    py_controller.reset(
+        initial_measurement=0.05,
+        initial_current=0.0,
+        initial_speed=0.0,
+    )
+    native_controller.reset(
+        initial_measurement=0.05,
+        initial_current=0.0,
+        initial_speed=0.0,
+    )
+
+    native_controller.output_duty_cycle = True
+
+    compare_sequences(py_controller, native_controller, steps=5, duty_cycle=True)
+
+    assert native_controller._last_voltage == pytest.approx(
+        py_controller._last_voltage, rel=1e-9, abs=1e-9
+    )

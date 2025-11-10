@@ -95,6 +95,8 @@ inline double ClampSymmetric(double value, double limit) {
     return std::max(-limit, std::min(limit, value));
 }
 
+constexpr double kDutyCycleSupplyVoltage = 28.0;
+
 inline double MeasurementToPosition(double measurement, const MotorParams& motor) {
     double clamped = std::max(-1.0, std::min(1.0, measurement));
     return clamped * motor.lvdt_full_scale;
@@ -194,6 +196,7 @@ class ContMPCController {
           friction_blend_error_high(friction_blend_error_high),
           model_bias_limit(std::abs(pi_limit)),
           friction_compensation(0.0),
+          output_duty_cycle(false),
           _opt_iters(opt_iters),
           _opt_step(opt_step),
           _opt_eps(opt_eps.has_value() ? *opt_eps : 0.05 * voltage_limit),
@@ -239,6 +242,7 @@ class ContMPCController {
     double friction_blend_error_high;
     double model_bias_limit;
     double friction_compensation;
+    bool output_duty_cycle;
 
     int _opt_iters;
     double _opt_step;
@@ -441,6 +445,9 @@ class ContMPCController {
         _state = PredictNext(_state, u, motor_params_);
         _last_voltage = u;
 
+        if (output_duty_cycle) {
+            return u / kDutyCycleSupplyVoltage;
+        }
         return u;
     }
 
@@ -958,6 +965,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
         .def_readwrite("friction_blend_error_high", &mm::ContMPCController::friction_blend_error_high)
         .def_readwrite("model_bias_limit", &mm::ContMPCController::model_bias_limit)
         .def_readwrite("friction_compensation", &mm::ContMPCController::friction_compensation)
+        .def_readwrite("output_duty_cycle", &mm::ContMPCController::output_duty_cycle)
         .def_readwrite("_opt_iters", &mm::ContMPCController::_opt_iters)
         .def_readwrite("_opt_step", &mm::ContMPCController::_opt_step)
         .def_readwrite("_opt_eps", &mm::ContMPCController::_opt_eps)
