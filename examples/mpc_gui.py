@@ -552,7 +552,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         pi_ki_spin = self._create_double_spin(
             0.0,
-            5.0,
+            500.0,
             0.001,
             3,
             defaults.get("pi_ki", 0.0),
@@ -669,7 +669,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         pi_ki_spin = self._create_double_spin(
             0.0,
-            5.0,
+            500.0,
             0.001,
             3,
             defaults.get("pi_ki", 0.0),
