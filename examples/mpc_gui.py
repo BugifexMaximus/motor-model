@@ -561,7 +561,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["pd_blend"] = pd_blend_spin
 
         pi_ki_spin = self._create_double_spin(
-            0.001,
+            0.0,
             500.0,
             0.001,
             3,
@@ -571,7 +571,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["pi_ki"] = pi_ki_spin
 
         pi_limit_spin = self._create_double_spin(
-            0.1,
+            0.001,
             50.0,
             0.1,
             2,
@@ -688,7 +688,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["pd_blend"] = pd_blend_spin
 
         pi_ki_spin = self._create_double_spin(
-            0.001,
+            0.0,
             500.0,
             0.001,
             3,
@@ -698,7 +698,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["pi_ki"] = pi_ki_spin
 
         pi_limit_spin = self._create_double_spin(
-            0.1,
+            0.001,
             50.0,
             0.1,
             2,
@@ -799,7 +799,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["integral_gain"] = integral_gain_spin
 
         integral_limit_spin = self._create_double_spin(
-            0.1,
+            0.001,
             50.0,
             0.1,
             1,
