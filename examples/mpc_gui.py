@@ -38,6 +38,55 @@ class DoubleParamConfig:
     suffix: str = ""
 
 
+class TorqueDisturbanceDialog(QtWidgets.QDialog):
+    """Dialog used to configure a torque disturbance event."""
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Apply torque disturbance")
+        self.setModal(True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        description = QtWidgets.QLabel(
+            "Inject a temporary external torque into the simulated plant."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        form = QtWidgets.QFormLayout()
+        layout.addLayout(form)
+
+        self.torque_spin = QtWidgets.QDoubleSpinBox()
+        self.torque_spin.setDecimals(4)
+        self.torque_spin.setRange(-0.5, 0.5)
+        self.torque_spin.setSingleStep(0.001)
+        self.torque_spin.setValue(0.02)
+        self.torque_spin.setSuffix(" N·m")
+        form.addRow("Torque", self.torque_spin)
+
+        self.duration_spin = QtWidgets.QDoubleSpinBox()
+        self.duration_spin.setDecimals(3)
+        self.duration_spin.setRange(0.01, 5.0)
+        self.duration_spin.setSingleStep(0.01)
+        self.duration_spin.setValue(0.1)
+        self.duration_spin.setSuffix(" s")
+        form.addRow("Duration", self.duration_spin)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def torque(self) -> float:
+        return float(self.torque_spin.value())
+
+    def duration(self) -> float:
+        return float(self.duration_spin.value())
+
+
 class ControllerDemo(QtWidgets.QMainWindow):
     """Main application window."""
 
@@ -82,6 +131,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls_layout.addWidget(self._create_target_section())
         controls_layout.addWidget(self._create_motor_section())
         controls_layout.addWidget(self._create_controller_section())
+        controls_layout.addWidget(self._create_disturbance_section())
         controls_layout.addWidget(self._create_status_section())
         controls_layout.addStretch(1)
 
@@ -679,13 +729,32 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.speed_label = QtWidgets.QLabel("0.00 deg/s")
         self.current_label = QtWidgets.QLabel("0.000 A")
         self.voltage_label = QtWidgets.QLabel("0.000 V")
+        self.disturbance_label = QtWidgets.QLabel("0.0000 N·m")
 
         layout.addRow("Time", self.time_label)
         layout.addRow("Position", self.position_label)
         layout.addRow("Speed", self.speed_label)
         layout.addRow("Current", self.current_label)
         layout.addRow("Voltage", self.voltage_label)
+        layout.addRow("Disturbance", self.disturbance_label)
 
+        return box
+
+    def _create_disturbance_section(self) -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox("Disturbances")
+        layout = QtWidgets.QVBoxLayout(box)
+
+        description = QtWidgets.QLabel(
+            "Apply external torques to observe how the controller reacts."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        apply_button = QtWidgets.QPushButton("Apply torque…")
+        apply_button.clicked.connect(self._on_apply_torque_clicked)
+        layout.addWidget(apply_button, alignment=QtCore.Qt.AlignLeft)
+
+        layout.addStretch(1)
         return box
 
     # ------------------------------------------------------------------
@@ -932,6 +1001,26 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.speed_label.setText(f"{math.degrees(self.simulation.speed):0.2f} deg/s")
         self.current_label.setText(f"{self.simulation.current:0.3f} A")
         self.voltage_label.setText(f"{self.simulation.voltage:0.3f} V")
+        self.disturbance_label.setText(f"{self.simulation.disturbance_torque:0.4f} N·m")
+
+    def _on_apply_torque_clicked(self) -> None:
+        if not self.simulation:
+            return
+
+        dialog = TorqueDisturbanceDialog(self)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        torque = dialog.torque()
+        duration = dialog.duration()
+
+        try:
+            self.simulation.apply_torque_disturbance(torque, duration)
+        except ValueError as exc:  # pragma: no cover - GUI feedback path
+            QtWidgets.QMessageBox.warning(self, "Invalid disturbance", str(exc))
+            return
+
+        self._update_status_labels()
 
 
 def main() -> None:
