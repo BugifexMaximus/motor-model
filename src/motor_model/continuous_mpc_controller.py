@@ -243,7 +243,9 @@ class ContMPCController:
 
             allow_integration = not_saturated and not blocked
             if self.pi_gate_error_band:
-                allow_integration = allow_integration and abs(e) > self.friction_blend_error_low
+                # Only suppress integration for truly tiny errors.
+                # Anything outside the tolerance is allowed to drive I-term.
+                allow_integration = allow_integration and abs(e) > self.position_tolerance
 
             if allow_integration:
                 self._int_err += e * self.dt
