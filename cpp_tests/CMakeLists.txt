@@ -20,6 +20,7 @@ set(NATIVE_SRC_DIR "${PROJECT_ROOT}/src/motor_model/_native")
 
 add_library(motor_model_cont_mpc STATIC
   "${NATIVE_SRC_DIR}/continuous_mpc_core.cpp"
+  "${NATIVE_SRC_DIR}/continuous_mpc_manager.cpp"
 )
 
 target_include_directories(motor_model_cont_mpc

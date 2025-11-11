@@ -353,7 +353,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.controller_type_combo = QtWidgets.QComboBox()
         self.controller_type_combo.addItem("LVDT MPC", "lvdtnom")
         self.controller_type_combo.addItem("Tube MPC", "tube")
-        self.controller_type_combo.addItem("Continuous MPC", "continuous")
+        self.controller_type_combo.addItem("Continuous MPC (Python)", "continuous")
+        self.controller_type_combo.addItem("Continuous MPC (C++)", "continuous_native")
         self.controller_type_combo.currentIndexChanged.connect(
             self._on_controller_type_changed
         )
@@ -377,6 +378,15 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.controller_controls_by_type["continuous"] = cont_controls
         self._controller_stack_indices["continuous"] = self.controller_stack.addWidget(
             cont_widget
+        )
+
+        cont_native_defaults = build_default_continuous_controller_kwargs()
+        cont_native_widget, cont_native_controls = self._build_continuous_controller_controls(
+            cont_native_defaults
+        )
+        self.controller_controls_by_type["continuous_native"] = cont_native_controls
+        self._controller_stack_indices["continuous_native"] = self.controller_stack.addWidget(
+            cont_native_widget
         )
 
         tube_defaults = build_default_tube_controller_kwargs()
@@ -1043,7 +1053,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
             else:
                 kwargs["auto_fc_cap"] = None
 
-        if controller_type == "continuous":
+        if controller_type in {"continuous", "continuous_native"}:
             kwargs.update(
                 {
                     "opt_iters": int(

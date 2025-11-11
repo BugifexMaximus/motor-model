@@ -28,7 +28,7 @@ def _make_simulation(
         controller_kwargs = build_default_tube_controller_kwargs(
             **(controller_overrides or {})
         )
-    elif controller_type == "continuous":
+    elif controller_type in {"continuous", "continuous_native"}:
         controller_kwargs = build_default_continuous_controller_kwargs(
             **(controller_overrides or {})
         )
@@ -88,10 +88,11 @@ def test_tube_controller_simulation_remains_stable():
     assert max(abs(v) for v in history.voltage) <= sim.controller.voltage_limit + 1e-6
 
 
-def test_continuous_controller_simulation_behaves():
+@pytest.mark.parametrize("controller_type", ["continuous", "continuous_native"])
+def test_continuous_controller_simulation_behaves(controller_type):
     target_deg = 5.0
     sim = _make_simulation(
-        controller_type="continuous", controller_overrides={"opt_iters": 3}
+        controller_type=controller_type, controller_overrides={"opt_iters": 3}
     )
     sim.set_target_position(math.radians(target_deg))
 

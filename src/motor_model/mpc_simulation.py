@@ -5,17 +5,18 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Literal, Tuple
+from typing import Any, Deque, Dict, Literal, Tuple
 
 from ._mpc_common import MPCWeights
 from .brushed_motor import BrushedMotorModel, rpm_per_volt_to_rad_per_sec_per_volt
 from .continuous_mpc_controller import ContMPCController
 from .mpc_controller import LVDTMPCController
 from .tube_mpc_controller import TubeMPCController
+from ._native import load_continuous_mpc
 
-ControllerName = Literal["lvdtnom", "tube", "continuous"]
+ControllerName = Literal["lvdtnom", "tube", "continuous", "continuous_native"]
 
-_CONTROLLER_CLASSES = {
+_PYTHON_CONTROLLER_CLASSES = {
     "lvdtnom": LVDTMPCController,
     "tube": TubeMPCController,
     "continuous": ContMPCController,
@@ -87,14 +88,16 @@ class MotorSimulation:
             if controller_motor_kwargs is not None
             else dict(motor_kwargs)
         )
-        if controller_type not in _CONTROLLER_CLASSES:
-            valid = ", ".join(sorted(_CONTROLLER_CLASSES))
+        supported = set(_PYTHON_CONTROLLER_CLASSES) | {"continuous_native"}
+        if controller_type not in supported:
+            valid = ", ".join(sorted(supported))
             raise ValueError(f"Unsupported controller_type '{controller_type}'. Choose from: {valid}.")
 
         self.history_duration = history_duration
         self.max_points = max_points
         self._history_max_points = max_points
         self._controller_type: ControllerName = controller_type
+        self._native_manager: Any | None = None
         self.reset()
 
     # ------------------------------------------------------------------
@@ -103,6 +106,8 @@ class MotorSimulation:
     def reset(self) -> None:
         """Reset the motor, controller and simulation history."""
 
+        self._stop_native_manager()
+
         self.motor = BrushedMotorModel(**self._motor_kwargs)
         controller_motor = BrushedMotorModel(**self._controller_motor_kwargs)
 
@@ -110,10 +115,28 @@ class MotorSimulation:
         weights = controller_kwargs.pop("weights", MPCWeights())
         if not isinstance(weights, MPCWeights):
             raise TypeError("weights must be an MPCWeights instance")
-        controller_cls = _CONTROLLER_CLASSES[self._controller_type]
-        self.controller = controller_cls(
-            controller_motor, weights=weights, **controller_kwargs
-        )
+
+        if self._controller_type == "continuous_native":
+            try:
+                native_module = load_continuous_mpc()
+            except ImportError as exc:  # pragma: no cover - import failure is environmental
+                raise RuntimeError(
+                    "The native continuous MPC module is not available. "
+                    "Build the extension before selecting the C++ controller."
+                ) from exc
+
+            self.controller = native_module.ContMPCController(
+                motor=controller_motor,
+                weights=weights,
+                **controller_kwargs,
+            )
+            self._native_manager = native_module.ContMPCControllerManager(self.controller)
+        else:
+            controller_cls = _PYTHON_CONTROLLER_CLASSES[self._controller_type]
+            self.controller = controller_cls(
+                controller_motor, weights=weights, **controller_kwargs
+            )
+            self._native_manager = None
 
         substeps = max(
             1,
@@ -145,7 +168,16 @@ class MotorSimulation:
             initial_current=self.current,
             initial_speed=self.speed,
         )
-        self.voltage = self.controller.update(time=0.0, measurement=initial_measurement)
+
+        if self._native_manager is not None:
+            future = self._native_manager.submit_step(
+                time=0.0, measurement=initial_measurement
+            )
+            self.voltage = future.result()
+        else:
+            self.voltage = self.controller.update(
+                time=0.0, measurement=initial_measurement
+            )
 
         self.time_history: Deque[float] = deque([0.0], maxlen=self._history_max_points)
         self.position_history: Deque[float] = deque([self.position], maxlen=self._history_max_points)
@@ -155,6 +187,19 @@ class MotorSimulation:
         self.current_history: Deque[float] = deque([self.current], maxlen=self._history_max_points)
         self.disturbance_history: Deque[float] = deque([self.disturbance_torque], maxlen=self._history_max_points)
         self._torque_disturbances: list[_TorqueDisturbance] = []
+
+    def __del__(self) -> None:  # pragma: no cover - best-effort cleanup
+        try:
+            self._stop_native_manager()
+        except Exception:
+            pass
+
+    def _stop_native_manager(self) -> None:
+        if self._native_manager is not None:
+            try:
+                self._native_manager.stop()
+            finally:
+                self._native_manager = None
 
     # ------------------------------------------------------------------
     # Public API used by the GUI and the unit tests
@@ -268,7 +313,15 @@ class MotorSimulation:
         self._steps_since_measurement += 1
         if self._steps_since_measurement >= self.measurement_steps:
             measurement = self.motor._lvdt_measurement(self.position)
-            self.voltage = self.controller.update(time=self.time, measurement=measurement)
+            if self._native_manager is not None:
+                future = self._native_manager.submit_step(
+                    time=self.time, measurement=measurement
+                )
+                self.voltage = future.result()
+            else:
+                self.voltage = self.controller.update(
+                    time=self.time, measurement=measurement
+                )
             self._steps_since_measurement = 0
 
         self._trim_history()

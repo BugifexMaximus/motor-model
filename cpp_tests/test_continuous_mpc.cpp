@@ -1,6 +1,12 @@
 #include "continuous_mpc_core.h"
+#include "continuous_mpc_manager.h"
 
 #include <gtest/gtest.h>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cmath>
+#include <mutex>
 #include <optional>
 
 namespace {
@@ -150,5 +156,70 @@ TEST(ContMPCControllerTest, AdaptToMotorUpdatesParameters) {
     EXPECT_NEAR(controller.friction_compensation, 0.12, 1e-12);
     EXPECT_DOUBLE_EQ(controller.voltage_limit, 6.0);
     EXPECT_EQ(controller.u_sequence().size(), 4u);
+}
+
+TEST(ContMPCControllerManagerTest, RealTimeLoopInvokesCallback) {
+    auto controller = MakeController(MakeTestMotor(), /*robust_electrical=*/true, /*inductance_rel_uncertainty=*/0.0);
+    controller.reset(/*initial_measurement=*/0.0, /*initial_current=*/0.0, /*initial_speed=*/0.0);
+
+    motor_model::ContMPCControllerManager manager(std::move(controller));
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    int callback_count = 0;
+    std::atomic<int> provider_calls{0};
+
+    manager.StartRealTime(
+        [&provider_calls]() {
+            int call = ++provider_calls;
+            return std::make_pair(static_cast<double>(call) * 0.01, 0.0);
+        },
+        [&mutex, &cv, &callback_count](double /*time*/, double /*measurement*/, double /*control*/) {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++callback_count;
+            cv.notify_all();
+        },
+        /*frequency_hz=*/100.0);
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait_for(lock, std::chrono::milliseconds(200), [&callback_count]() { return callback_count >= 3; });
+    }
+
+    manager.Stop();
+
+    EXPECT_GE(callback_count, 3);
+}
+
+TEST(ContMPCControllerManagerTest, TriggeredStepProvidesFutureAndCallback) {
+    auto controller = MakeController(MakeTestMotor(), /*robust_electrical=*/true, /*inductance_rel_uncertainty=*/0.0);
+    controller.reset(/*initial_measurement=*/0.0, /*initial_current=*/0.0, /*initial_speed=*/0.0);
+
+    motor_model::ContMPCControllerManager manager(std::move(controller));
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool callback_called = false;
+
+    auto future = manager.SubmitStep(
+        /*time=*/0.01,
+        /*measurement=*/0.0,
+        [&mutex, &cv, &callback_called](double /*time*/, double /*measurement*/, double /*control*/) {
+            std::lock_guard<std::mutex> lock(mutex);
+            callback_called = true;
+            cv.notify_all();
+        });
+
+    double result = future.get();
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait_for(lock, std::chrono::milliseconds(100), [&callback_called]() { return callback_called; });
+    }
+
+    manager.Stop();
+
+    EXPECT_TRUE(callback_called);
+    EXPECT_TRUE(std::isfinite(result));
 }
 
