@@ -2,10 +2,13 @@
 #include <pybind11/stl.h>
 
 #include <cmath>
+#include <memory>
 
 #include "continuous_mpc_core.h"
 
 namespace py = pybind11;
+
+void RegisterContMPCControllerManager(py::module_& m);
 
 namespace {
 
@@ -165,7 +168,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
         .def_readwrite("integration_substeps", &mm::MotorParams::integration_substeps)
         .def("with_inductance", &mm::MotorParams::WithInductance);
 
-    py::class_<mm::ContMPCController>(m, "ContMPCController")
+    py::class_<mm::ContMPCController, std::shared_ptr<mm::ContMPCController>>(m, "ContMPCController")
         .def(
             py::init([](const mm::MotorParams& motor_params,
                         double dt,
@@ -199,7 +202,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
                         double opt_step,
                         std::optional<double> opt_eps) {
                 mm::MPCWeightsValues resolved = weights.value_or(mm::MPCWeightsValues{});
-                return std::make_unique<mm::ContMPCController>(
+                return std::make_shared<mm::ContMPCController>(
                     motor_params,
                     dt,
                     horizon,
@@ -298,7 +301,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
                         std::optional<double> opt_eps) {
                 mm::MotorParams params = ResolveMotorParams(motor);
                 mm::MPCWeightsValues resolved = ResolveWeights(weights);
-                return std::make_unique<mm::ContMPCController>(
+                return std::make_shared<mm::ContMPCController>(
                     params,
                     dt,
                     horizon,
@@ -459,5 +462,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
         .def_readwrite("_last_voltage", &mm::ContMPCController::_last_voltage)
         .def_readwrite("_last_measured_position", &mm::ContMPCController::_last_measured_position)
         .def_readwrite("_last_measurement_time", &mm::ContMPCController::_last_measurement_time);
+
+    RegisterContMPCControllerManager(m);
 }
 
