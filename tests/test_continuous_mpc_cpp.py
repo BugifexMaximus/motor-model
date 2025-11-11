@@ -12,7 +12,11 @@ from motor_model.brushed_motor import (
 )
 from motor_model.continuous_mpc_controller import ContMPCController as PyContMPC
 from motor_model._mpc_common import MPCWeights
-from motor_model._native.continuous_mpc import ContMPCController as NativeContMPC
+from motor_model._native.continuous_mpc import (
+    ContMPCController as NativeContMPC,
+    MotorParameters,
+    MPCWeights as NativeMPCWeights,
+)
 
 
 SUPPLY_BUS_VOLTAGE = 28.0
@@ -86,6 +90,31 @@ def controller_pair() -> tuple[PyContMPC, NativeContMPC]:
     return instantiate_controllers(motor)
 
 
+def assert_motor_parameters_close(
+    native_params: MotorParameters, python_motor: BrushedMotorModel
+) -> None:
+    float_attrs = [
+        "resistance",
+        "inductance",
+        "kv",
+        "inertia",
+        "viscous_friction",
+        "coulomb_friction",
+        "static_friction",
+        "stop_speed_threshold",
+        "spring_constant",
+        "spring_compression_ratio",
+        "lvdt_full_scale",
+    ]
+    for attr in float_attrs:
+        assert getattr(native_params, attr) == pytest.approx(
+            getattr(python_motor, attr), rel=1e-9, abs=1e-9
+        )
+    assert native_params.ke == pytest.approx(python_motor._ke, rel=1e-9, abs=1e-9)
+    assert native_params.kt == pytest.approx(python_motor._kt, rel=1e-9, abs=1e-9)
+    assert native_params.integration_substeps == python_motor.integration_substeps
+
+
 def compare_sequences(
     py_controller: PyContMPC,
     native_controller: NativeContMPC,
@@ -143,7 +172,11 @@ def test_native_controller_matches_python() -> None:
         py_controller._auto_friction_compensation
     )
     assert len(native_controller._prediction_models) == len(py_controller._prediction_models)
-    assert native_controller._motor is py_controller._motor
+    assert_motor_parameters_close(native_controller._motor, py_controller._motor)
+    for native_params, python_motor in zip(
+        native_controller._prediction_models, py_controller._prediction_models
+    ):
+        assert_motor_parameters_close(native_params, python_motor)
 
     compare_sequences(py_controller, native_controller, steps=6)
 
@@ -341,3 +374,80 @@ def test_duty_cycle_output_matches_scaled_voltage() -> None:
     assert native_controller._last_voltage == pytest.approx(
         py_controller._last_voltage, rel=1e-9, abs=1e-9
     )
+
+
+def test_native_controller_accepts_motor_parameters() -> None:
+    motor = make_motor()
+    kwargs = dict(
+        dt=0.01,
+        horizon=4,
+        voltage_limit=8.0,
+        target_lvdt=0.35,
+        position_tolerance=0.01,
+        static_friction_penalty=35.0,
+        friction_compensation=None,
+        auto_fc_gain=1.7,
+        auto_fc_floor=0.1,
+        auto_fc_cap=0.9,
+        friction_blend_error_low=0.05,
+        friction_blend_error_high=0.3,
+        internal_substeps=12,
+        robust_electrical=False,
+        electrical_alpha=0.75,
+        inductance_rel_uncertainty=0.2,
+        pd_blend=0.55,
+        pd_kp=5.2,
+        pd_kd=0.28,
+        pi_ki=0.45,
+        pi_limit=3.8,
+        pi_gate_saturation=False,
+        pi_gate_blocked=False,
+        pi_gate_error_band=True,
+        pi_leak_near_setpoint=False,
+        use_model_integrator=True,
+        opt_iters=6,
+        opt_step=0.12,
+        opt_eps=0.08,
+    )
+
+    py_controller = PyContMPC(motor, weights=make_weights(), **kwargs)
+
+    params = MotorParameters(
+        resistance=motor.resistance,
+        inductance=motor.inductance,
+        kv=motor.kv,
+        inertia=motor.inertia,
+        viscous_friction=motor.viscous_friction,
+        coulomb_friction=motor.coulomb_friction,
+        static_friction=motor.static_friction,
+        stop_speed_threshold=motor.stop_speed_threshold,
+        spring_constant=motor.spring_constant,
+        spring_compression_ratio=motor.spring_compression_ratio,
+        lvdt_full_scale=motor.lvdt_full_scale,
+        integration_substeps=motor.integration_substeps,
+    )
+
+    base_weights = make_weights()
+    native_weights = NativeMPCWeights(
+        position=base_weights.position,
+        speed=base_weights.speed,
+        voltage=base_weights.voltage,
+        delta_voltage=base_weights.delta_voltage,
+        terminal_position=base_weights.terminal_position,
+    )
+
+    native_controller = NativeContMPC(params, weights=native_weights, **kwargs)
+
+    measurement = 0.18
+    py_controller.reset(
+        initial_measurement=measurement,
+        initial_current=0.0,
+        initial_speed=0.0,
+    )
+    native_controller.reset(
+        initial_measurement=measurement,
+        initial_current=0.0,
+        initial_speed=0.0,
+    )
+
+    compare_sequences(py_controller, native_controller, steps=5)
