@@ -45,11 +45,11 @@ int checked_multiple(double value, double dt, const char *name) {
 }  // namespace
 
 double rpm_per_volt_to_rad_per_sec_per_volt(double value) {
-  return value * kRpmPerVoltToRadPerSecPerVolt;
+  return value * rpm_per_volt_to_rad_per_sec_per_volt_factor;
 }
 
 double rad_per_sec_per_volt_to_rpm_per_volt(double value) {
-  return value * kRadPerSecPerVoltToRpmPerVolt;
+  return value * rad_per_sec_per_volt_to_rpm_per_volt_factor;
 }
 
 BrushedMotorModel::BrushedMotorModel(double resistance,

@@ -8,8 +8,10 @@
 
 namespace motor_model::native {
 
-constexpr double kRpmPerVoltToRadPerSecPerVolt = 2.0 * 3.14159265358979323846 / 60.0;
-constexpr double kRadPerSecPerVoltToRpmPerVolt = 60.0 / (2.0 * 3.14159265358979323846);
+constexpr double rpm_per_volt_to_rad_per_sec_per_volt_factor =
+    2.0 * 3.14159265358979323846 / 60.0;
+constexpr double rad_per_sec_per_volt_to_rpm_per_volt_factor =
+    60.0 / (2.0 * 3.14159265358979323846);
 
 double rpm_per_volt_to_rad_per_sec_per_volt(double value);
 double rad_per_sec_per_volt_to_rpm_per_volt(double value);
