@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import importlib
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Iterable
@@ -51,4 +52,5 @@ _NATIVE_MODULES: Iterable[str] = (
 def _ensure_native_extensions(project_root: Path) -> None:
     install_cmd = [sys.executable, "-m", "pip", "install", "-e", str(project_root)]
     subprocess.run(install_cmd, cwd=project_root, check=True)
+    importlib.invalidate_caches()
 
