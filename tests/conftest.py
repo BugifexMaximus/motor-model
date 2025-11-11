@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import importlib
+import warnings
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Iterable
@@ -15,6 +16,12 @@ def pytest_sessionstart(session):  # type: ignore[override]
     """Ensure the compiled native modules are present before running tests."""
 
     if os.environ.get("MOTOR_MODEL_SKIP_NATIVE_BUILD"):
+        warnings.warn(
+            "*** WARNING: MOTOR_MODEL_SKIP_NATIVE_BUILD is set; native extensions will "
+            "not be rebuilt for tests. This may lead to outdated binaries being "
+            "used. ***",
+            UserWarning,
+        )
         return
 
     missing = tuple(
