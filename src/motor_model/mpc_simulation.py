@@ -12,9 +12,10 @@ from .brushed_motor import BrushedMotorModel, rpm_per_volt_to_rad_per_sec_per_vo
 from .continuous_mpc_controller import ContMPCController
 from .mpc_controller import LVDTMPCController
 from .tube_mpc_controller import TubeMPCController
-from ._native import load_continuous_mpc
+from ._native import load_brushed_motor, load_continuous_mpc
 
 ControllerName = Literal["lvdtnom", "tube", "continuous", "continuous_native"]
+MotorBackend = Literal["python", "native"]
 
 _PYTHON_CONTROLLER_CLASSES = {
     "lvdtnom": LVDTMPCController,
@@ -80,6 +81,7 @@ class MotorSimulation:
         max_points: int = 8000,
         controller_motor_kwargs: Dict[str, float] | None = None,
         controller_type: ControllerName = "lvdtnom",
+        motor_backend: MotorBackend = "python",
     ) -> None:
         self._motor_kwargs = dict(motor_kwargs)
         self._controller_kwargs = dict(controller_kwargs)
@@ -93,11 +95,18 @@ class MotorSimulation:
             valid = ", ".join(sorted(supported))
             raise ValueError(f"Unsupported controller_type '{controller_type}'. Choose from: {valid}.")
 
+        if motor_backend not in {"python", "native"}:
+            valid = ", ".join(sorted({"python", "native"}))
+            raise ValueError(
+                f"Unsupported motor_backend '{motor_backend}'. Choose from: {valid}."
+            )
+
         self.history_duration = history_duration
         self.max_points = max_points
         self._history_max_points = max_points
         self._controller_type: ControllerName = controller_type
         self._native_manager: Any | None = None
+        self._motor_backend: MotorBackend = motor_backend
         self.reset()
 
     # ------------------------------------------------------------------
@@ -108,7 +117,7 @@ class MotorSimulation:
 
         self._stop_native_manager()
 
-        self.motor = BrushedMotorModel(**self._motor_kwargs)
+        self.motor = self._create_motor(self._motor_kwargs)
         controller_motor = BrushedMotorModel(**self._controller_motor_kwargs)
 
         controller_kwargs = dict(self._controller_kwargs)
@@ -187,6 +196,26 @@ class MotorSimulation:
         self.current_history: Deque[float] = deque([self.current], maxlen=self._history_max_points)
         self.disturbance_history: Deque[float] = deque([self.disturbance_torque], maxlen=self._history_max_points)
         self._torque_disturbances: list[_TorqueDisturbance] = []
+
+    def motor_backend(self) -> MotorBackend:
+        return self._motor_backend
+
+    def _create_motor(self, kwargs: Dict[str, float]) -> Any:
+        if self._motor_backend == "native":
+            try:
+                native_module = load_brushed_motor()
+            except ImportError as exc:  # pragma: no cover - import failure depends on build
+                raise RuntimeError(
+                    "The native brushed motor module is not available. "
+                    "Build the extension before selecting the C++ motor."
+                ) from exc
+
+            native_kwargs = dict(kwargs)
+            if "rng" in native_kwargs:
+                raise ValueError("Native motor backend does not support custom RNG instances")
+            motor = native_module.BrushedMotorModel(**native_kwargs)
+            return motor
+        return BrushedMotorModel(**kwargs)
 
     def __del__(self) -> None:  # pragma: no cover - best-effort cleanup
         try:

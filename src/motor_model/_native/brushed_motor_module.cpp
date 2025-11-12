@@ -127,7 +127,26 @@ PYBIND11_MODULE(brushed_motor, m) {
            py::arg("integration_substeps") = 1,
            py::arg("rng_seed") = std::optional<std::uint32_t>())
       .def_property_readonly("speed_constant_rpm_per_volt", &BrushedMotorModel::speed_constant_rpm_per_volt)
-      .def_property_readonly("integration_substeps", &BrushedMotorModel::integration_substeps)
+      .def_property("integration_substeps",
+                    &BrushedMotorModel::integration_substeps,
+                    &BrushedMotorModel::set_integration_substeps)
+      .def_property_readonly("resistance", &BrushedMotorModel::resistance)
+      .def_property_readonly("inductance", &BrushedMotorModel::inductance)
+      .def_property_readonly("kv", &BrushedMotorModel::kv)
+      .def_property_readonly("inertia", &BrushedMotorModel::inertia)
+      .def_property_readonly("viscous_friction", &BrushedMotorModel::viscous_friction)
+      .def_property_readonly("coulomb_friction", &BrushedMotorModel::coulomb_friction)
+      .def_property_readonly("static_friction", &BrushedMotorModel::static_friction)
+      .def_property_readonly("stop_speed_threshold", &BrushedMotorModel::stop_speed_threshold)
+      .def_property_readonly("spring_constant", &BrushedMotorModel::spring_constant)
+      .def_property_readonly("spring_compression_ratio", &BrushedMotorModel::spring_compression_ratio)
+      .def_property_readonly("lvdt_full_scale", &BrushedMotorModel::lvdt_full_scale)
+      .def_property_readonly("lvdt_noise_std", &BrushedMotorModel::lvdt_noise_std)
+      .def_property_readonly("_ke", &BrushedMotorModel::ke)
+      .def_property_readonly("_kt", &BrushedMotorModel::kt)
+      .def("_lvdt_measurement", &BrushedMotorModel::lvdt_measurement)
+      .def("_spring_torque", &BrushedMotorModel::spring_torque)
+      .def_static("_sign", &BrushedMotorModel::sign)
       .def("simulate",
            [](BrushedMotorModel &self,
               py::object voltage_obj,

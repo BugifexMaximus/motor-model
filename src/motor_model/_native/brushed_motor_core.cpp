@@ -112,6 +112,13 @@ BrushedMotorModel::BrushedMotorModel(double resistance,
   }
 }
 
+void BrushedMotorModel::set_integration_substeps(int value) {
+  if (value <= 0) {
+    throw std::invalid_argument("integration_substeps must be positive");
+  }
+  integration_substeps_ = value;
+}
+
 double BrushedMotorModel::speed_constant_rpm_per_volt() const {
   return rad_per_sec_per_volt_to_rpm_per_volt(kv_);
 }

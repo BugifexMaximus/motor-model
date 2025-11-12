@@ -333,6 +333,11 @@ class ControllerDemo(QtWidgets.QMainWindow):
         description.setWordWrap(True)
         form.addRow(description)
 
+        self.native_motor_check = QtWidgets.QCheckBox("Use native C++ motor model")
+        self.native_motor_check.setChecked(True)
+        self.native_motor_check.stateChanged.connect(self._on_parameters_changed)
+        form.addRow(self.native_motor_check)
+
         self.motor_controls: Dict[str, QtWidgets.QDoubleSpinBox] = {}
         defaults = build_default_motor_kwargs(lvdt_noise_std=5e-3)
         configs = self._motor_param_configs(defaults)
@@ -1165,12 +1170,34 @@ class ControllerDemo(QtWidgets.QMainWindow):
         else:
             controller_kwargs["friction_compensation"] = float(self.friction_spin.value())
 
-        self.simulation = MotorSimulation(
-            motor_kwargs,
-            controller_kwargs,
-            controller_motor_kwargs=controller_motor_kwargs,
-            controller_type=controller_type,
-        )
+        motor_backend = "native" if self.native_motor_check.isChecked() else "python"
+
+        try:
+            self.simulation = MotorSimulation(
+                motor_kwargs,
+                controller_kwargs,
+                controller_motor_kwargs=controller_motor_kwargs,
+                controller_type=controller_type,
+                motor_backend=motor_backend,
+            )
+        except RuntimeError as exc:
+            if motor_backend == "native":
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Native motor unavailable",
+                    str(exc),
+                )
+                with QtCore.QSignalBlocker(self.native_motor_check):
+                    self.native_motor_check.setChecked(False)
+                self.simulation = MotorSimulation(
+                    motor_kwargs,
+                    controller_kwargs,
+                    controller_motor_kwargs=controller_motor_kwargs,
+                    controller_type=controller_type,
+                    motor_backend="python",
+                )
+            else:
+                raise
         self.simulation.set_target_position(target_position)
 
         self._block_updates = True

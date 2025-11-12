@@ -55,6 +55,26 @@ class BrushedMotorModel {
 
   double speed_constant_rpm_per_volt() const;
   int integration_substeps() const { return integration_substeps_; }
+  void set_integration_substeps(int value);
+
+  double resistance() const { return resistance_; }
+  double inductance() const { return inductance_; }
+  double kv() const { return kv_; }
+  double inertia() const { return inertia_; }
+  double viscous_friction() const { return viscous_friction_; }
+  double coulomb_friction() const { return coulomb_friction_; }
+  double static_friction() const { return static_friction_; }
+  double stop_speed_threshold() const { return stop_speed_threshold_; }
+  double spring_constant() const { return spring_constant_; }
+  double spring_compression_ratio() const { return spring_compression_ratio_; }
+  double lvdt_full_scale() const { return lvdt_full_scale_; }
+  double lvdt_noise_std() const { return lvdt_noise_std_; }
+  double ke() const { return ke_; }
+  double kt() const { return kt_; }
+
+  double spring_torque(double position) const;
+  double lvdt_measurement(double position) const;
+  static double sign(double value);
 
   SimulationResult simulate(VoltageSource voltage,
                             double duration,
@@ -67,11 +87,6 @@ class BrushedMotorModel {
                             std::optional<double> controller_period = std::nullopt) const;
 
   static VoltageSource constant_voltage_source(double value);
-
- private:
-  double spring_torque(double position) const;
-  double lvdt_measurement(double position) const;
-  static double sign(double value);
 
   double resistance_;
   double inductance_;
