@@ -117,6 +117,10 @@ class MotorSimulation:
 
         self._stop_native_manager()
 
+        self._last_pi_integrator = math.nan
+        self._last_model_integrator = math.nan
+        self._last_planned_voltage: Tuple[float, ...] = ()
+
         self.motor = self._create_motor(self._motor_kwargs)
         controller_motor = BrushedMotorModel(**self._controller_motor_kwargs)
 
@@ -188,6 +192,8 @@ class MotorSimulation:
                 time=0.0, measurement=initial_measurement
             )
 
+        self._capture_diagnostics()
+
         self.time_history: Deque[float] = deque([0.0], maxlen=self._history_max_points)
         self.position_history: Deque[float] = deque([self.position], maxlen=self._history_max_points)
         self.setpoint_history: Deque[float] = deque([self.target_position()], maxlen=self._history_max_points)
@@ -195,6 +201,17 @@ class MotorSimulation:
         self.speed_history: Deque[float] = deque([self.speed], maxlen=self._history_max_points)
         self.current_history: Deque[float] = deque([self.current], maxlen=self._history_max_points)
         self.disturbance_history: Deque[float] = deque([self.disturbance_torque], maxlen=self._history_max_points)
+        self.lvdt_time_history: Deque[float] = deque([0.0], maxlen=self._history_max_points)
+        self.lvdt_history: Deque[float] = deque([initial_measurement], maxlen=self._history_max_points)
+        self.pi_integrator_history: Deque[float] = deque([
+            self._last_pi_integrator
+        ], maxlen=self._history_max_points)
+        self.model_integrator_history: Deque[float] = deque([
+            self._last_model_integrator
+        ], maxlen=self._history_max_points)
+        self.planned_voltage_history: Deque[Tuple[float, ...]] = deque([
+            self._last_planned_voltage
+        ], maxlen=self._history_max_points)
         self._torque_disturbances: list[_TorqueDisturbance] = []
 
     def motor_backend(self) -> MotorBackend:
@@ -352,7 +369,10 @@ class MotorSimulation:
                     time=self.time, measurement=measurement
                 )
             self._steps_since_measurement = 0
+            self._capture_diagnostics()
+            self._record_measurement(self.time, measurement)
 
+        self._append_diagnostics_sample()
         self._trim_history()
 
     def _trim_history(self) -> None:
@@ -367,6 +387,13 @@ class MotorSimulation:
             self.speed_history.popleft()
             self.current_history.popleft()
             self.disturbance_history.popleft()
+            self.pi_integrator_history.popleft()
+            self.model_integrator_history.popleft()
+            self.planned_voltage_history.popleft()
+
+        while self.lvdt_time_history and self.lvdt_time_history[0] < min_time:
+            self.lvdt_time_history.popleft()
+            self.lvdt_history.popleft()
 
     def _active_disturbance_torque(self) -> float:
         """Return the total torque of disturbances active at the current time."""
@@ -384,6 +411,59 @@ class MotorSimulation:
             self._torque_disturbances = remaining
 
         return self._manual_torque + scheduled
+
+    def _capture_diagnostics(self) -> None:
+        controller = getattr(self, "controller", None)
+        pi_value = math.nan
+        model_value = math.nan
+        planned: Tuple[float, ...] = ()
+
+        if controller is not None:
+            pi_raw = self._controller_attribute(controller, ("_int_err", "_position_integral"))
+            gain = self._controller_attribute(controller, ("pi_ki", "_integral_gain"))
+            if pi_raw is not None:
+                try:
+                    scale = float(gain) if gain is not None else 1.0
+                    pi_value = float(pi_raw) * scale
+                except (TypeError, ValueError):
+                    pi_value = math.nan
+
+            model_raw = self._controller_attribute(controller, ("_u_bias",))
+            if model_raw is not None:
+                try:
+                    model_value = float(model_raw)
+                except (TypeError, ValueError):
+                    model_value = math.nan
+
+            plan_attr = getattr(controller, "_u_seq", None)
+            if plan_attr is not None:
+                try:
+                    planned = tuple(float(value) for value in plan_attr)
+                except (TypeError, ValueError):
+                    planned = ()
+
+        self._last_pi_integrator = pi_value
+        self._last_model_integrator = model_value
+        self._last_planned_voltage = planned
+
+    @staticmethod
+    def _controller_attribute(controller: object, names: Tuple[str, ...]) -> float | None:
+        for name in names:
+            if hasattr(controller, name):
+                try:
+                    return float(getattr(controller, name))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _append_diagnostics_sample(self) -> None:
+        self.pi_integrator_history.append(self._last_pi_integrator)
+        self.model_integrator_history.append(self._last_model_integrator)
+        self.planned_voltage_history.append(self._last_planned_voltage)
+
+    def _record_measurement(self, time: float, measurement: float) -> None:
+        self.lvdt_time_history.append(time)
+        self.lvdt_history.append(measurement)
 
 
 def build_default_motor_kwargs(**overrides: float) -> Dict[str, float]:
