@@ -116,6 +116,7 @@ def _clone_motor_with_inductance(
         stop_speed_threshold=motor.stop_speed_threshold,
         spring_constant=motor.spring_constant,
         spring_compression_ratio=motor.spring_compression_ratio,
+        spring_zero_position=motor.spring_zero_position,
         lvdt_full_scale=motor.lvdt_full_scale,
         lvdt_noise_std=0.0,
         integration_substeps=motor.integration_substeps,

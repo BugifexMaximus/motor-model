@@ -120,6 +120,11 @@ class MotorSimulation:
         self._last_pi_integrator = math.nan
         self._last_model_integrator = math.nan
         self._last_planned_voltage: Tuple[float, ...] = ()
+        self._last_estimated_speed = math.nan
+        self._last_auto_friction = math.nan
+        self._last_user_friction = math.nan
+        self._last_dynamic_friction = math.nan
+        self._last_friction_error = math.nan
 
         self.motor = self._create_motor(self._motor_kwargs)
         controller_motor = BrushedMotorModel(**self._controller_motor_kwargs)
@@ -200,6 +205,9 @@ class MotorSimulation:
         self.voltage_history: Deque[float] = deque([self.voltage], maxlen=self._history_max_points)
         self.speed_history: Deque[float] = deque([self.speed], maxlen=self._history_max_points)
         self.current_history: Deque[float] = deque([self.current], maxlen=self._history_max_points)
+        self.estimated_speed_history: Deque[float] = deque(
+            [self._last_estimated_speed], maxlen=self._history_max_points
+        )
         self.disturbance_history: Deque[float] = deque([self.disturbance_torque], maxlen=self._history_max_points)
         self.lvdt_time_history: Deque[float] = deque([0.0], maxlen=self._history_max_points)
         self.lvdt_history: Deque[float] = deque([initial_measurement], maxlen=self._history_max_points)
@@ -212,6 +220,18 @@ class MotorSimulation:
         self.planned_voltage_history: Deque[Tuple[float, ...]] = deque([
             self._last_planned_voltage
         ], maxlen=self._history_max_points)
+        self.auto_friction_history: Deque[float] = deque(
+            [self._last_auto_friction], maxlen=self._history_max_points
+        )
+        self.user_friction_history: Deque[float] = deque(
+            [self._last_user_friction], maxlen=self._history_max_points
+        )
+        self.dynamic_friction_history: Deque[float] = deque(
+            [self._last_dynamic_friction], maxlen=self._history_max_points
+        )
+        self.friction_error_history: Deque[float] = deque(
+            [self._last_friction_error], maxlen=self._history_max_points
+        )
         self._torque_disturbances: list[_TorqueDisturbance] = []
 
     def motor_backend(self) -> MotorBackend:
@@ -386,10 +406,15 @@ class MotorSimulation:
             self.voltage_history.popleft()
             self.speed_history.popleft()
             self.current_history.popleft()
+            self.estimated_speed_history.popleft()
             self.disturbance_history.popleft()
             self.pi_integrator_history.popleft()
             self.model_integrator_history.popleft()
             self.planned_voltage_history.popleft()
+            self.auto_friction_history.popleft()
+            self.user_friction_history.popleft()
+            self.dynamic_friction_history.popleft()
+            self.friction_error_history.popleft()
 
         while self.lvdt_time_history and self.lvdt_time_history[0] < min_time:
             self.lvdt_time_history.popleft()
@@ -417,6 +442,11 @@ class MotorSimulation:
         pi_value = math.nan
         model_value = math.nan
         planned: Tuple[float, ...] = ()
+        estimated_speed = math.nan
+        auto_friction = math.nan
+        user_friction = math.nan
+        dynamic_friction = math.nan
+        friction_error = math.nan
 
         if controller is not None:
             pi_raw = self._controller_attribute(controller, ("_int_err", "_position_integral"))
@@ -442,9 +472,46 @@ class MotorSimulation:
                 except (TypeError, ValueError):
                     planned = ()
 
+            est_attr = self._controller_attribute(controller, ("_last_estimated_speed",))
+            if est_attr is not None:
+                estimated_speed = est_attr
+
+            auto_attr = self._controller_attribute(controller, ("_auto_friction_compensation",))
+            if auto_attr is not None:
+                auto_friction = auto_attr
+            else:
+                fallback_auto = getattr(controller, "friction_compensation", None)
+                if fallback_auto is not None:
+                    try:
+                        auto_friction = float(fallback_auto)
+                    except (TypeError, ValueError):
+                        auto_friction = math.nan
+
+            user_attr = getattr(controller, "_active_user_friction_compensation", None)
+            if user_attr is None:
+                user_attr = getattr(controller, "_user_friction_compensation", None)
+            if user_attr is not None:
+                try:
+                    user_friction = float(user_attr)
+                except (TypeError, ValueError):
+                    user_friction = math.nan
+
+            dynamic_attr = self._controller_attribute(controller, ("_last_friction_floor",))
+            if dynamic_attr is not None:
+                dynamic_friction = dynamic_attr
+
+            error_attr = self._controller_attribute(controller, ("_last_friction_error",))
+            if error_attr is not None:
+                friction_error = error_attr
+
         self._last_pi_integrator = pi_value
         self._last_model_integrator = model_value
         self._last_planned_voltage = planned
+        self._last_estimated_speed = estimated_speed
+        self._last_auto_friction = auto_friction
+        self._last_user_friction = user_friction
+        self._last_dynamic_friction = dynamic_friction
+        self._last_friction_error = friction_error
 
     @staticmethod
     def _controller_attribute(controller: object, names: Tuple[str, ...]) -> float | None:
@@ -460,6 +527,11 @@ class MotorSimulation:
         self.pi_integrator_history.append(self._last_pi_integrator)
         self.model_integrator_history.append(self._last_model_integrator)
         self.planned_voltage_history.append(self._last_planned_voltage)
+        self.estimated_speed_history.append(self._last_estimated_speed)
+        self.auto_friction_history.append(self._last_auto_friction)
+        self.user_friction_history.append(self._last_user_friction)
+        self.dynamic_friction_history.append(self._last_dynamic_friction)
+        self.friction_error_history.append(self._last_friction_error)
 
     def _record_measurement(self, time: float, measurement: float) -> None:
         self.lvdt_time_history.append(time)
@@ -480,6 +552,7 @@ def build_default_motor_kwargs(**overrides: float) -> Dict[str, float]:
         "stop_speed_threshold": 1e-4,
         "spring_constant": 9.5e-4,
         "spring_compression_ratio": 0.4,
+        "spring_zero_position": 0.0,
         "lvdt_full_scale": math.radians(30.0),
         "lvdt_noise_std": 0.0,
     }
@@ -510,7 +583,7 @@ def build_default_controller_kwargs(**overrides: object) -> Dict[str, object]:
         "pi_limit": 5.0,
         "pi_gate_saturation": True,
         "pi_gate_blocked": True,
-        "pi_gate_error_band": True,
+        "pi_gate_error_band": False,
         "pi_leak_near_setpoint": True,
         "use_model_integrator": False,
     }
@@ -543,7 +616,7 @@ def build_default_continuous_controller_kwargs(**overrides: object) -> Dict[str,
         "pi_limit": 5.0,
         "pi_gate_saturation": True,
         "pi_gate_blocked": True,
-        "pi_gate_error_band": True,
+        "pi_gate_error_band": False,
         "pi_leak_near_setpoint": True,
         "use_model_integrator": False,
     }

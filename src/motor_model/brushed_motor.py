@@ -95,6 +95,11 @@ class BrushedMotorModel:
         Torsional spring constant (N*m/rad) coupling the rotor to ground.
     spring_compression_ratio: float
         Ratio controlling the spring preload applied at zero position.
+    spring_zero_position: float
+        Equilibrium angle of the torsional spring in radians. Positive rotor
+        angles beyond this value compress the spring and generate a restoring
+        torque according to ``spring_constant``. Angles below the equilibrium
+        use ``spring_compression_ratio`` to scale the restoring torque.
     lvdt_full_scale: float
         Maximum measurable angle (in radians) for the simulated LVDT sensor.
     lvdt_noise_std: float
@@ -120,6 +125,7 @@ class BrushedMotorModel:
         stop_speed_threshold: float = 1e-4,
         spring_constant: float = 9.5e-4,
         spring_compression_ratio: float = 0.4,
+        spring_zero_position: float = 0.0,
         lvdt_full_scale: float = 0.1,
         lvdt_noise_std: float = 5e-3,
         integration_substeps: int = 1,
@@ -137,6 +143,8 @@ class BrushedMotorModel:
             raise ValueError("spring_constant must be non-negative")
         if not 0.0 <= spring_compression_ratio <= 1.0:
             raise ValueError("spring_compression_ratio must be between 0 and 1")
+        if not math.isfinite(spring_zero_position):
+            raise ValueError("spring_zero_position must be a finite value")
         if lvdt_full_scale <= 0:
             raise ValueError("lvdt_full_scale must be positive")
         if lvdt_noise_std < 0:
@@ -154,6 +162,7 @@ class BrushedMotorModel:
         self.stop_speed_threshold = stop_speed_threshold
         self.spring_constant = spring_constant
         self.spring_compression_ratio = spring_compression_ratio
+        self.spring_zero_position = spring_zero_position
         self.lvdt_full_scale = lvdt_full_scale
         self.lvdt_noise_std = lvdt_noise_std
         self._rng = rng or random.Random()
@@ -375,9 +384,10 @@ class BrushedMotorModel:
     def _spring_torque(self, position: float) -> float:
         if self.spring_constant == 0.0:
             return 0.0
-        if position >= 0.0:
-            return self.spring_constant * position
-        return self.spring_constant * self.spring_compression_ratio * position
+        deflection = position - self.spring_zero_position
+        if deflection >= 0.0:
+            return self.spring_constant * deflection
+        return self.spring_constant * self.spring_compression_ratio * deflection
 
     def _lvdt_measurement(self, position: float) -> float:
         normalized = position / self.lvdt_full_scale

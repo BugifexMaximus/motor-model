@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import math
+import numbers
 import sys
+from collections.abc import Mapping, MutableMapping
+from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, cast
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, cast
+
+import yaml
 
 from PyQt5 import QtCore, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -165,11 +173,14 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.simulation: MotorSimulation | None = None
         self._manual_torque_dialog: ManualTorquePad | None = None
         self._manual_torque_limit = 5.0
+        self._settings = QtCore.QSettings("motor-model", "mpc_gui")
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
 
         layout = QtWidgets.QHBoxLayout(central)
+
+        self._create_settings_menu()
 
         self.figure = Figure(figsize=(6, 4))
         self.canvas = FigureCanvas(self.figure)
@@ -181,6 +192,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self._show_speed = True
         self._show_current = True
         self._show_voltage = True
+        self._show_friction = True
 
         self._axes: List = []
         self.position_ax = None
@@ -190,17 +202,24 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.voltage_ax = None
         self.integrator_ax = None
         self.plan_ax = None
+        self.friction_ax = None
+        self.friction_error_ax = None
 
         self.position_line = None
         self.setpoint_line = None
         self.lvdt_line = None
         self.speed_line = None
+        self.estimated_speed_line = None
         self.current_line = None
         self.voltage_line = None
         self.pi_integrator_line = None
         self.model_integrator_line = None
         self.plan_history_line = None
         self.plan_future_line = None
+        self.auto_friction_line = None
+        self.user_friction_line = None
+        self.dynamic_friction_line = None
+        self.friction_error_line = None
 
         self._build_plot_area()
         self.canvas.mpl_connect("button_press_event", self._on_plot_clicked)
@@ -225,6 +244,9 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls_layout.addWidget(self._create_status_section())
         controls_layout.addStretch(1)
 
+        self._default_state = copy.deepcopy(self._capture_state())
+        self._load_qsettings()
+
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(30)
         self.timer.timeout.connect(self._on_timer)
@@ -236,7 +258,23 @@ class ControllerDemo(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------
     # UI builders
     # ------------------------------------------------------------------
+    def _create_settings_menu(self) -> None:
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("&File")
+
+        load_action = file_menu.addAction("Load settings from YAML…")
+        load_action.triggered.connect(self._load_settings_from_yaml)
+
+        save_action = file_menu.addAction("Save settings to YAML…")
+        save_action.triggered.connect(self._save_settings_to_yaml)
+
+        file_menu.addSeparator()
+
+        reset_action = file_menu.addAction("Reset to defaults")
+        reset_action.triggered.connect(self._reset_to_defaults)
+
     def _motor_param_configs(self, defaults: Dict[str, float]) -> Dict[str, DoubleParamConfig]:
+        spring_zero_deg = math.degrees(defaults.get("spring_zero_position", 0.0))
         return {
             "resistance": DoubleParamConfig("Resistance [Ω]", 1.0, 100.0, 0.1, 2, defaults["resistance"]),
             "inductance": DoubleParamConfig("Inductance [H]", 1e-4, 0.2, 1e-4, 6, defaults["inductance"]),
@@ -256,13 +294,16 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 "Coulomb friction [N·m]", 0.0, 0.02, 1e-4, 4, defaults["coulomb_friction"]
             ),
             "static_friction": DoubleParamConfig(
-                "Static friction [N·m]", 0.0, 0.1, 1e-4, 4, defaults["static_friction"]
+                "Static friction [N·m]", 0.0, 5.0, 1e-3, 4, defaults["static_friction"]
             ),
             "stop_speed_threshold": DoubleParamConfig(
                 "Stop threshold [rad/s]", 0.0, 0.1, 1e-4, 6, defaults["stop_speed_threshold"]
             ),
             "spring_constant": DoubleParamConfig(
-                "Spring constant [N·m/rad]", 0.0, 1e-1, 1e-4, 6, defaults["spring_constant"]
+                "Spring constant [N·m/rad]", 0.0, 5.0, 1e-4, 6, defaults["spring_constant"]
+            ),
+            "spring_zero_position_deg": DoubleParamConfig(
+                "Spring equilibrium [deg]", -180.0, 180.0, 0.1, 1, spring_zero_deg, suffix="°"
             ),
             "spring_compression_ratio": DoubleParamConfig(
                 "Compression ratio", 0.0, 1.0, 0.01, 3, defaults["spring_compression_ratio"]
@@ -443,7 +484,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         self.friction_spin = QtWidgets.QDoubleSpinBox()
         self.friction_spin.setDecimals(3)
-        self.friction_spin.setRange(0.1, 30.0)
+        self.friction_spin.setRange(0.1, 50.0)
         self.friction_spin.setSingleStep(0.1)
         self.friction_spin.setValue(3.0)
         self.friction_spin.valueChanged.connect(self._on_parameters_changed)
@@ -526,7 +567,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 2.5))
+        auto_gain_spin = self._create_double_spin(0.1, 50.0, 0.05, 2, defaults.get("auto_fc_gain", 2.5))
         form.addRow("Auto friction gain", auto_gain_spin)
         controls["auto_fc_gain"] = auto_gain_spin
 
@@ -639,7 +680,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["pi_gate_blocked"] = pi_gate_blocked
 
         pi_gate_error = QtWidgets.QCheckBox("Require large error to integrate")
-        pi_gate_error.setChecked(defaults.get("pi_gate_error_band", True))
+        pi_gate_error.setChecked(defaults.get("pi_gate_error_band", False))
         pi_options_layout.addWidget(pi_gate_error)
         controls["pi_gate_error_band"] = pi_gate_error
 
@@ -685,7 +726,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         form.addRow("Static friction penalty", penalty_spin)
         controls["static_friction_penalty"] = penalty_spin
 
-        auto_gain_spin = self._create_double_spin(0.1, 5.0, 0.05, 2, defaults.get("auto_fc_gain", 2.5))
+        auto_gain_spin = self._create_double_spin(0.1, 50.0, 0.05, 2, defaults.get("auto_fc_gain", 2.5))
         form.addRow("Auto friction gain", auto_gain_spin)
         controls["auto_fc_gain"] = auto_gain_spin
 
@@ -798,7 +839,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         controls["pi_gate_blocked"] = pi_gate_blocked
 
         pi_gate_error = QtWidgets.QCheckBox("Require large error to integrate")
-        pi_gate_error.setChecked(defaults.get("pi_gate_error_band", True))
+        pi_gate_error.setChecked(defaults.get("pi_gate_error_band", False))
         pi_options_layout.addWidget(pi_gate_error)
         controls["pi_gate_error_band"] = pi_gate_error
 
@@ -1017,6 +1058,11 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.show_plan_check.stateChanged.connect(self._on_plot_options_changed)
         diagnostics_layout.addWidget(self.show_plan_check)
 
+        self.show_friction_check = QtWidgets.QCheckBox("Friction diagnostics")
+        self.show_friction_check.setChecked(self._show_friction)
+        self.show_friction_check.stateChanged.connect(self._on_plot_options_changed)
+        diagnostics_layout.addWidget(self.show_friction_check)
+
         diagnostics_layout.addStretch(1)
         layout.addWidget(diagnostics_box)
 
@@ -1028,6 +1074,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         include_current = self._show_current
         include_voltage = self._show_voltage
         include_integrator = self._show_integrator
+        include_friction = self._show_friction
         include_plan = self._show_planned_voltage
 
         self.figure.clear()
@@ -1036,6 +1083,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         axes_count += int(include_current)
         axes_count += int(include_voltage)
         axes_count += int(include_integrator)
+        axes_count += int(include_friction)
         axes_count += int(include_plan)
         axes_count = max(1, axes_count)
         axes = self.figure.subplots(axes_count, 1, sharex=True)
@@ -1074,10 +1122,14 @@ class ControllerDemo(QtWidgets.QMainWindow):
             self.speed_ax.set_ylabel("Speed [deg/s]")
             self.speed_ax.grid(True)
             (self.speed_line,) = self.speed_ax.plot([], [], label="Speed", color="#ff7f0e")
+            (self.estimated_speed_line,) = self.speed_ax.plot(
+                [], [], label="Estimated", color="#ffbb78", linestyle="--"
+            )
             axis_index += 1
         else:
             self.speed_ax = None
             self.speed_line = None
+            self.estimated_speed_line = None
 
         if include_current and axis_index < len(self._axes):
             self.current_ax = self._axes[axis_index]
@@ -1115,6 +1167,34 @@ class ControllerDemo(QtWidgets.QMainWindow):
             self.pi_integrator_line = None
             self.model_integrator_line = None
 
+        if include_friction and axis_index < len(self._axes):
+            self.friction_ax = self._axes[axis_index]
+            self.friction_ax.set_ylabel("Friction [V]")
+            self.friction_ax.grid(True)
+            (self.auto_friction_line,) = self.friction_ax.plot(
+                [], [], label="Auto", color="#7f7f7f"
+            )
+            (self.user_friction_line,) = self.friction_ax.plot(
+                [], [], label="Manual", color="#bcbd22"
+            )
+            (self.dynamic_friction_line,) = self.friction_ax.plot(
+                [], [], label="Active", color="#1f77b4"
+            )
+            self.friction_error_ax = self.friction_ax.twinx()
+            self.friction_error_ax.set_ylabel("Error [deg]")
+            self.friction_error_ax.grid(False)
+            (self.friction_error_line,) = self.friction_error_ax.plot(
+                [], [], label="Error", color="#d62728", linestyle="--"
+            )
+            axis_index += 1
+        else:
+            self.friction_ax = None
+            self.friction_error_ax = None
+            self.auto_friction_line = None
+            self.user_friction_line = None
+            self.dynamic_friction_line = None
+            self.friction_error_line = None
+
         if include_plan:
             self.plan_ax = self._axes[axis_index]
             self.plan_ax.set_ylabel("Planned V [V]")
@@ -1142,8 +1222,10 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self._show_lvdt = self.show_lvdt_check.isChecked()
         self._show_integrator = self.show_integrator_check.isChecked()
         self._show_planned_voltage = self.show_plan_check.isChecked()
+        self._show_friction = self.show_friction_check.isChecked()
         self._build_plot_area()
         self._update_plot()
+        self._save_qsettings()
 
     def _create_disturbance_section(self) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox("Disturbances")
@@ -1172,6 +1254,320 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         layout.addStretch(1)
         return box
+
+    # ------------------------------------------------------------------
+    # Settings persistence
+    # ------------------------------------------------------------------
+    def _settings_widgets(self) -> List[QtCore.QObject]:
+        widgets: List[QtCore.QObject] = [
+            self.target_spin,
+            self.native_motor_check,
+            self.auto_friction_check,
+            self.friction_spin,
+            self.controller_type_combo,
+            self.show_speed_check,
+            self.show_current_check,
+            self.show_voltage_check,
+            self.show_lvdt_check,
+            self.show_integrator_check,
+            self.show_plan_check,
+            self.show_friction_check,
+        ]
+        widgets.extend(self.motor_controls.values())
+        widgets.extend(self.controller_model_controls.values())
+        widgets.extend(self.weight_controls.values())
+        for controls in self.controller_controls_by_type.values():
+            widgets.extend(controls.values())
+        return [widget for widget in widgets if widget is not None]
+
+    def _widget_value(self, widget: QtWidgets.QWidget) -> Any:
+        if isinstance(widget, QtWidgets.QDoubleSpinBox):
+            return float(widget.value())
+        if isinstance(widget, QtWidgets.QSpinBox):
+            return int(widget.value())
+        if isinstance(widget, QtWidgets.QCheckBox):
+            return bool(widget.isChecked())
+        if isinstance(widget, QtWidgets.QComboBox):
+            data = widget.currentData()
+            return str(data) if data is not None else widget.currentText()
+        raise TypeError(f"Unsupported widget type: {type(widget)!r}")
+
+    def _set_widget_value(self, widget: QtWidgets.QWidget, value: Any) -> None:
+        try:
+            if isinstance(widget, QtWidgets.QDoubleSpinBox):
+                widget.setValue(float(value))
+            elif isinstance(widget, QtWidgets.QSpinBox):
+                if isinstance(value, numbers.Real):
+                    widget.setValue(int(round(float(value))))
+                elif isinstance(value, str) and value.strip():
+                    widget.setValue(int(round(float(value))))
+            elif isinstance(widget, QtWidgets.QCheckBox):
+                widget.setChecked(bool(value))
+            elif isinstance(widget, QtWidgets.QComboBox):
+                target = str(value)
+                index = widget.findData(target)
+                if index < 0:
+                    index = widget.findText(target)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+            else:
+                raise TypeError
+        except (TypeError, ValueError):  # pragma: no cover - invalid persisted values
+            return
+
+    def _capture_state(self) -> Dict[str, Any]:
+        state: Dict[str, Any] = {
+            "target_deg": float(self.target_spin.value()),
+            "controller_type": self._current_controller_type(),
+            "native_motor": bool(self.native_motor_check.isChecked()),
+            "auto_friction": bool(self.auto_friction_check.isChecked()),
+            "manual_friction": float(self.friction_spin.value()),
+            "plot": {
+                "show_speed": bool(self.show_speed_check.isChecked()),
+                "show_current": bool(self.show_current_check.isChecked()),
+                "show_voltage": bool(self.show_voltage_check.isChecked()),
+                "show_lvdt": bool(self.show_lvdt_check.isChecked()),
+                "show_integrator": bool(self.show_integrator_check.isChecked()),
+                "show_plan": bool(self.show_plan_check.isChecked()),
+                "show_friction": bool(self.show_friction_check.isChecked()),
+            },
+            "motor": {name: float(control.value()) for name, control in self.motor_controls.items()},
+            "controller_model": {
+                name: float(control.value()) for name, control in self.controller_model_controls.items()
+            },
+            "weights": {name: float(control.value()) for name, control in self.weight_controls.items()},
+            "controllers": {},
+        }
+
+        for controller_type, controls in self.controller_controls_by_type.items():
+            controller_state: Dict[str, Any] = {}
+            for name, widget in controls.items():
+                controller_state[name] = self._widget_value(widget)
+            state["controllers"][controller_type] = controller_state
+
+        return state
+
+    def _apply_state(self, state: Mapping[str, Any]) -> None:
+        widgets = self._settings_widgets()
+        with ExitStack() as stack:
+            for widget in widgets:
+                stack.enter_context(QtCore.QSignalBlocker(widget))
+
+            previous_setup = self._setup_in_progress
+            previous_block = self._block_updates
+            self._setup_in_progress = True
+            self._block_updates = True
+            try:
+                def _coerce_bool(raw: Any, fallback: bool) -> bool:
+                    if isinstance(raw, bool):
+                        return raw
+                    if isinstance(raw, numbers.Real):
+                        return bool(raw)
+                    if isinstance(raw, str):
+                        lowered = raw.strip().lower()
+                        if lowered in {"true", "yes", "1", "on"}:
+                            return True
+                        if lowered in {"false", "no", "0", "off"}:
+                            return False
+                    return fallback
+
+                target_deg = state.get("target_deg")
+                if isinstance(target_deg, numbers.Real):
+                    self.target_spin.setValue(float(target_deg))
+
+                self.native_motor_check.setChecked(
+                    _coerce_bool(state.get("native_motor", True), True)
+                )
+                self.auto_friction_check.setChecked(
+                    _coerce_bool(state.get("auto_friction", True), True)
+                )
+                manual_friction = state.get("manual_friction")
+                if isinstance(manual_friction, numbers.Real):
+                    self.friction_spin.setValue(float(manual_friction))
+
+                controller_type_value = state.get("controller_type")
+                if isinstance(controller_type_value, str):
+                    index = self.controller_type_combo.findData(controller_type_value)
+                    if index < 0:
+                        index = self.controller_type_combo.findText(controller_type_value)
+                    if index >= 0:
+                        self.controller_type_combo.setCurrentIndex(index)
+                current_type = self._current_controller_type()
+                if current_type in self._controller_stack_indices:
+                    self.controller_stack.setCurrentIndex(
+                        self._controller_stack_indices[current_type]
+                    )
+
+                motor_state = state.get("motor")
+                if isinstance(motor_state, Mapping):
+                    for name, control in self.motor_controls.items():
+                        if name in motor_state:
+                            self._set_widget_value(control, motor_state[name])
+
+                model_state = state.get("controller_model")
+                if isinstance(model_state, Mapping):
+                    for name, control in self.controller_model_controls.items():
+                        if name in model_state:
+                            self._set_widget_value(control, model_state[name])
+
+                weight_state = state.get("weights")
+                if isinstance(weight_state, Mapping):
+                    for name, control in self.weight_controls.items():
+                        if name in weight_state:
+                            self._set_widget_value(control, weight_state[name])
+
+                controllers_state = state.get("controllers")
+                if isinstance(controllers_state, Mapping):
+                    for c_type, controls in self.controller_controls_by_type.items():
+                        type_state = controllers_state.get(c_type)
+                        if not isinstance(type_state, Mapping):
+                            continue
+                        for name, widget in controls.items():
+                            if name in type_state:
+                                self._set_widget_value(widget, type_state[name])
+                        if "auto_fc_cap_enabled" in controls and "auto_fc_cap" in controls:
+                            enabled = _coerce_bool(
+                                type_state.get("auto_fc_cap_enabled"),
+                                cast(QtWidgets.QCheckBox, controls["auto_fc_cap_enabled"]).isChecked(),
+                            )
+                            cast(QtWidgets.QDoubleSpinBox, controls["auto_fc_cap"]).setEnabled(enabled)
+
+                plot_state = state.get("plot")
+                if isinstance(plot_state, Mapping):
+                    self._show_speed = _coerce_bool(
+                        plot_state.get("show_speed", self._show_speed), self._show_speed
+                    )
+                    self._show_current = _coerce_bool(
+                        plot_state.get("show_current", self._show_current), self._show_current
+                    )
+                    self._show_voltage = _coerce_bool(
+                        plot_state.get("show_voltage", self._show_voltage), self._show_voltage
+                    )
+                    self._show_lvdt = _coerce_bool(
+                        plot_state.get("show_lvdt", self._show_lvdt), self._show_lvdt
+                    )
+                    self._show_integrator = _coerce_bool(
+                        plot_state.get("show_integrator", self._show_integrator),
+                        self._show_integrator,
+                    )
+                    self._show_planned_voltage = _coerce_bool(
+                        plot_state.get("show_plan", self._show_planned_voltage),
+                        self._show_planned_voltage,
+                    )
+                    self._show_friction = _coerce_bool(
+                        plot_state.get("show_friction", self._show_friction),
+                        self._show_friction,
+                    )
+
+                self.show_speed_check.setChecked(self._show_speed)
+                self.show_current_check.setChecked(self._show_current)
+                self.show_voltage_check.setChecked(self._show_voltage)
+                self.show_lvdt_check.setChecked(self._show_lvdt)
+                self.show_integrator_check.setChecked(self._show_integrator)
+                self.show_plan_check.setChecked(self._show_planned_voltage)
+                self.show_friction_check.setChecked(self._show_friction)
+
+                self._build_plot_area()
+                self._update_plot()
+            finally:
+                self._setup_in_progress = previous_setup
+                self._block_updates = previous_block
+
+    def _deep_update(
+        self, base: MutableMapping[str, Any], updates: Mapping[str, Any]
+    ) -> None:
+        for key, value in updates.items():
+            if isinstance(value, Mapping):
+                base_value = base.get(key)
+                if isinstance(base_value, MutableMapping):
+                    self._deep_update(base_value, value)
+                else:
+                    base[key] = copy.deepcopy(value)
+            else:
+                base[key] = value
+
+    def _load_qsettings(self) -> None:
+        raw_state = self._settings.value("state")
+        if not raw_state:
+            return
+        try:
+            loaded = json.loads(str(raw_state))
+        except (TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(loaded, dict):
+            return
+
+        state = copy.deepcopy(self._default_state)
+        self._deep_update(state, loaded)
+        self._apply_state(state)
+
+    def _save_qsettings(self) -> None:
+        if self._setup_in_progress:
+            return
+        state = self._capture_state()
+        try:
+            payload = json.dumps(state)
+        except (TypeError, ValueError):  # pragma: no cover - defensive guard
+            return
+        self._settings.setValue("state", payload)
+        self._settings.sync()
+
+    def _save_settings_to_yaml(self) -> None:
+        filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save settings",
+            str(Path.home()),
+            "YAML files (*.yaml *.yml);;All files (*)",
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        state = self._capture_state()
+        try:
+            yaml_text = yaml.safe_dump(state, sort_keys=True)
+            path.write_text(yaml_text, encoding="utf-8")
+        except (OSError, yaml.YAMLError) as exc:  # pragma: no cover - GUI feedback
+            QtWidgets.QMessageBox.warning(self, "Failed to save settings", str(exc))
+
+    def _load_settings_from_yaml(self) -> None:
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load settings",
+            str(Path.home()),
+            "YAML files (*.yaml *.yml);;All files (*)",
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        try:
+            yaml_text = path.read_text(encoding="utf-8")
+        except OSError as exc:  # pragma: no cover - GUI feedback
+            QtWidgets.QMessageBox.warning(self, "Failed to load settings", str(exc))
+            return
+        try:
+            loaded = yaml.safe_load(yaml_text)
+        except yaml.YAMLError as exc:  # pragma: no cover - GUI feedback
+            QtWidgets.QMessageBox.warning(self, "Invalid settings file", str(exc))
+            return
+        if not isinstance(loaded, Mapping):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid settings file",
+                "The selected YAML file must contain a mapping at the top level.",
+            )
+            return
+
+        state = copy.deepcopy(self._default_state)
+        self._deep_update(state, loaded)
+        self._apply_state(state)
+        self.reset_simulation()
+        self._save_qsettings()
+
+    def _reset_to_defaults(self) -> None:
+        state = copy.deepcopy(self._default_state)
+        self._apply_state(state)
+        self.reset_simulation()
+        self._save_qsettings()
 
     # ------------------------------------------------------------------
     # Simulation handling
@@ -1338,6 +1734,9 @@ class ControllerDemo(QtWidgets.QMainWindow):
             value = float(control.value())
             if name == "kv":
                 value = rpm_per_volt_to_rad_per_sec_per_volt(value)
+            elif name == "spring_zero_position_deg":
+                motor_kwargs["spring_zero_position"] = math.radians(value)
+                continue
             motor_kwargs[name] = value
 
         controller_motor_kwargs = {}
@@ -1345,6 +1744,9 @@ class ControllerDemo(QtWidgets.QMainWindow):
             value = float(control.value())
             if name == "kv":
                 value = rpm_per_volt_to_rad_per_sec_per_volt(value)
+            elif name == "spring_zero_position_deg":
+                controller_motor_kwargs["spring_zero_position"] = math.radians(value)
+                continue
             controller_motor_kwargs[name] = value
 
         controller_type = self._current_controller_type()
@@ -1410,6 +1812,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         self._update_plot()
         self._update_status_labels()
+        self._save_qsettings()
 
     def _on_parameters_changed(self) -> None:
         if self._setup_in_progress or self._block_updates:
@@ -1422,6 +1825,7 @@ class ControllerDemo(QtWidgets.QMainWindow):
         if not self.simulation:
             return
         self.simulation.set_target_position(math.radians(value))
+        self._save_qsettings()
 
     def _on_plot_clicked(self, event) -> None:  # type: ignore[override]
         if self.position_ax is None or not self.simulation:
@@ -1463,6 +1867,9 @@ class ControllerDemo(QtWidgets.QMainWindow):
         positions_deg = [math.degrees(value) for value in self.simulation.position_history]
         setpoints_deg = [math.degrees(value) for value in self.simulation.setpoint_history]
         speeds_deg = [math.degrees(value) for value in self.simulation.speed_history]
+        estimated_speeds_deg = [
+            math.degrees(value) for value in self.simulation.estimated_speed_history
+        ]
         currents = list(self.simulation.current_history)
         voltages = list(self.simulation.voltage_history)
 
@@ -1518,8 +1925,27 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         if self.speed_line is not None and self.speed_ax is not None:
             self.speed_line.set_data(times, speeds_deg)
+            handles = []
+            labels = []
+            if any(math.isfinite(value) for value in speeds_deg):
+                handles.append(self.speed_line)
+                labels.append("Speed")
+            if self.estimated_speed_line is not None:
+                has_estimated = any(math.isfinite(value) for value in estimated_speeds_deg)
+                if has_estimated:
+                    self.estimated_speed_line.set_data(times, estimated_speeds_deg)
+                    handles.append(self.estimated_speed_line)
+                    labels.append("Estimated")
+                    self.estimated_speed_line.set_visible(True)
+                else:
+                    self.estimated_speed_line.set_data([], [])
+                    self.estimated_speed_line.set_visible(False)
             self.speed_ax.relim()
             self.speed_ax.autoscale_view()
+            if handles:
+                self.speed_ax.legend(handles, labels, loc="upper right")
+            elif self.speed_ax.legend_ is not None:
+                self.speed_ax.legend_.remove()
 
         if self.current_line is not None and self.current_ax is not None:
             self.current_line.set_data(times, currents)
@@ -1551,6 +1977,73 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 self.integrator_ax.legend(handles, labels, loc="upper right")
             elif self.integrator_ax.legend_ is not None:
                 self.integrator_ax.legend_.remove()
+
+        if self.friction_ax is not None and self.auto_friction_line is not None:
+            auto_values = list(self.simulation.auto_friction_history)
+            user_values = list(self.simulation.user_friction_history)
+            dynamic_values = list(self.simulation.dynamic_friction_history)
+            error_values_deg = [
+                math.degrees(value) for value in self.simulation.friction_error_history
+            ]
+
+            has_auto = any(math.isfinite(value) for value in auto_values)
+            has_user = any(math.isfinite(value) for value in user_values)
+            has_dynamic = any(math.isfinite(value) for value in dynamic_values)
+            has_error = any(math.isfinite(value) for value in error_values_deg)
+
+            if has_auto:
+                self.auto_friction_line.set_data(times, auto_values)
+                self.auto_friction_line.set_visible(True)
+            else:
+                self.auto_friction_line.set_data([], [])
+                self.auto_friction_line.set_visible(False)
+
+            if has_user:
+                self.user_friction_line.set_data(times, user_values)
+                self.user_friction_line.set_visible(True)
+            else:
+                self.user_friction_line.set_data([], [])
+                self.user_friction_line.set_visible(False)
+
+            if has_dynamic:
+                self.dynamic_friction_line.set_data(times, dynamic_values)
+                self.dynamic_friction_line.set_visible(True)
+            else:
+                self.dynamic_friction_line.set_data([], [])
+                self.dynamic_friction_line.set_visible(False)
+
+            if self.friction_error_line is not None and self.friction_error_ax is not None:
+                if has_error:
+                    self.friction_error_line.set_data(times, error_values_deg)
+                    self.friction_error_line.set_visible(True)
+                    self.friction_error_ax.relim()
+                    self.friction_error_ax.autoscale_view()
+                else:
+                    self.friction_error_line.set_data([], [])
+                    self.friction_error_line.set_visible(False)
+
+            self.friction_ax.relim()
+            self.friction_ax.autoscale_view()
+
+            handles = []
+            labels = []
+            if has_auto:
+                handles.append(self.auto_friction_line)
+                labels.append("Auto")
+            if has_user:
+                handles.append(self.user_friction_line)
+                labels.append("Manual")
+            if has_dynamic:
+                handles.append(self.dynamic_friction_line)
+                labels.append("Active")
+            if has_error and self.friction_error_line is not None:
+                handles.append(self.friction_error_line)
+                labels.append("Error")
+
+            if handles:
+                self.friction_ax.legend(handles, labels, loc="upper right")
+            elif self.friction_ax.legend_ is not None:
+                self.friction_ax.legend_.remove()
 
         if self.plan_ax is not None and self.plan_history_line is not None:
             plan_has_history = bool(plan_history_times)
@@ -1650,6 +2143,10 @@ class ControllerDemo(QtWidgets.QMainWindow):
             return
 
         self._update_status_labels()
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._save_qsettings()
+        super().closeEvent(event)
 
 
 def main() -> None:

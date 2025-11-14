@@ -144,7 +144,7 @@ class LVDTMPCController:
         pi_limit: float = 5.0,
         pi_gate_saturation: bool = True,
         pi_gate_blocked: bool = True,
-        pi_gate_error_band: bool = True,
+        pi_gate_error_band: bool = False,
         pi_leak_near_setpoint: bool = True,
         use_model_integrator: bool = False,
     ) -> None:
@@ -240,6 +240,9 @@ class LVDTMPCController:
         self._last_voltage: float | None = None
         self._last_measured_position: float | None = None
         self._last_measurement_time: float | None = None
+        self._last_estimated_speed: float = 0.0
+        self._last_friction_floor: float = 0.0
+        self._last_friction_error: float = 0.0
 
     def adapt_to_motor(
         self,
@@ -311,6 +314,9 @@ class LVDTMPCController:
         self._int_err = 0.0
         self._u_bias = 0.0
         self._nominal_state = self._state
+        self._last_estimated_speed = initial_speed
+        self._last_friction_floor = self.friction_compensation
+        self._last_friction_error = 0.0
 
     def update(self, *, time: float, measurement: float) -> float:
         """Return the next control action using the latest LVDT measurement."""
@@ -336,6 +342,7 @@ class LVDTMPCController:
         self._state = (current, estimated_speed, measured_position)
         self._last_measured_position = measured_position
         self._last_measurement_time = time
+        self._last_estimated_speed = estimated_speed
 
         # --------------------------------------------------
         # Nominal model rollout (for model-based integrator)
@@ -396,7 +403,12 @@ class LVDTMPCController:
             return 0.0
 
         position_error = self.target_lvdt - normalized_measurement
+        error_radians = position_error
+        if self._motor is not None:
+            error_radians = position_error * self._motor.lvdt_full_scale
+        self._last_friction_error = error_radians
         friction_floor = self._dynamic_friction_compensation(position_error)
+        self._last_friction_floor = friction_floor
         # Legacy error-based PI mode (unchanged behavior) for comparison
         if (not self.use_model_integrator) and self.pi_ki > 0.0:
             u_last = self._last_voltage or 0.0
@@ -479,6 +491,7 @@ class LVDTMPCController:
         ) = self._determine_friction_compensation(motor, friction_compensation)
         self._voltage_candidates = self._build_voltage_candidates(self._candidate_count)
         self._prediction_models = self._build_prediction_models(motor)
+        self._last_friction_floor = self.friction_compensation
 
     def _determine_friction_compensation(
         self,

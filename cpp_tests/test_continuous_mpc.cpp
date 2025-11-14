@@ -88,6 +88,9 @@ TEST(MotorParamsTest, SpringTorqueRespectsCompressionRatio) {
 
     EXPECT_DOUBLE_EQ(params.SpringTorque(0.1), 0.2);
     EXPECT_DOUBLE_EQ(params.SpringTorque(-0.1), -0.1);
+    params.spring_zero_position = 0.2;
+    EXPECT_DOUBLE_EQ(params.SpringTorque(0.3), 0.2);
+    EXPECT_DOUBLE_EQ(params.SpringTorque(0.0), -0.2);
     params.spring_constant = 0.0;
     EXPECT_DOUBLE_EQ(params.SpringTorque(0.5), 0.0);
 }
