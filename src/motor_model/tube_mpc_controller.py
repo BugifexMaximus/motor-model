@@ -112,6 +112,9 @@ class TubeMPCController:
         self._last_measured_position: float | None = None
         self._last_measurement_time: float | None = None
         self._position_integral: float = 0.0
+        self._last_estimated_speed: float = 0.0
+        self._last_friction_floor: float = 0.0
+        self._last_friction_error: float = 0.0
 
         self._motor: BrushedMotorModel | None = None
         self._linearization_motor: BrushedMotorModel | None = None
@@ -164,6 +167,9 @@ class TubeMPCController:
         self._last_measured_position = position
         self._last_measurement_time = None
         self._position_integral = 0.0
+        self._last_estimated_speed = initial_speed
+        self._last_friction_floor = self.friction_compensation
+        self._last_friction_error = 0.0
 
     def update(self, *, time: float, measurement: float) -> float:
         if self._motor is None:
@@ -196,6 +202,7 @@ class TubeMPCController:
         self._state = (current_estimate, estimated_speed, measured_position)
         self._last_measured_position = measured_position
         self._last_measurement_time = time
+        self._last_estimated_speed = estimated_speed
 
         best_sequence: Tuple[float, ...] | None = None
         best_cost = float("inf")
@@ -220,6 +227,10 @@ class TubeMPCController:
             self._state[2] - self._nominal_state[2],
         )
         position_error = self.target_lvdt - normalized_measurement
+        error_radians = position_error
+        if self._motor is not None:
+            error_radians = position_error * self._motor.lvdt_full_scale
+        self._last_friction_error = error_radians
         self._position_integral = _clamp_symmetric(
             self._position_integral + position_error, self._integral_limit
         )
@@ -243,6 +254,8 @@ class TubeMPCController:
             direction = 1.0 if position_error >= 0.0 else -1.0
             control_voltage = direction * self.friction_compensation
             control_voltage = _clamp_symmetric(control_voltage, effective_limit)
+
+        self._last_friction_floor = self.friction_compensation
 
         self._last_control = control_voltage
         self._last_nominal_voltage = nominal_voltage
@@ -280,6 +293,7 @@ class TubeMPCController:
         self.friction_compensation = self._determine_friction_compensation(
             motor, friction_compensation
         )
+        self._last_friction_floor = self.friction_compensation
         self._error_bounds = self._compute_error_bounds(motor)
         self._max_current_estimate = max(abs(bound) for bound in self._error_bounds[0])
         self._compute_feedback_and_tube()
@@ -296,6 +310,7 @@ class TubeMPCController:
             stop_speed_threshold=0.0,
             spring_constant=motor.spring_constant,
             spring_compression_ratio=motor.spring_compression_ratio,
+            spring_zero_position=motor.spring_zero_position,
             lvdt_full_scale=motor.lvdt_full_scale,
             lvdt_noise_std=0.0,
             integration_substeps=motor.integration_substeps,

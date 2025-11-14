@@ -62,6 +62,7 @@ BrushedMotorModel::BrushedMotorModel(double resistance,
                                      double stop_speed_threshold,
                                      double spring_constant,
                                      double spring_compression_ratio,
+                                     double spring_zero_position,
                                      double lvdt_full_scale,
                                      double lvdt_noise_std,
                                      int integration_substeps,
@@ -76,6 +77,7 @@ BrushedMotorModel::BrushedMotorModel(double resistance,
       stop_speed_threshold_(stop_speed_threshold),
       spring_constant_(spring_constant),
       spring_compression_ratio_(spring_compression_ratio),
+      spring_zero_position_(spring_zero_position),
       lvdt_full_scale_(lvdt_full_scale),
       lvdt_noise_std_(lvdt_noise_std),
       integration_substeps_(integration_substeps),
@@ -100,6 +102,9 @@ BrushedMotorModel::BrushedMotorModel(double resistance,
   }
   if (spring_compression_ratio < 0.0 || spring_compression_ratio > 1.0) {
     throw std::invalid_argument("spring_compression_ratio must be between 0 and 1");
+  }
+  if (!std::isfinite(spring_zero_position)) {
+    throw std::invalid_argument("spring_zero_position must be finite");
   }
   if (lvdt_full_scale <= 0.0) {
     throw std::invalid_argument("lvdt_full_scale must be positive");
@@ -282,10 +287,11 @@ double BrushedMotorModel::spring_torque(double position) const {
   if (spring_constant_ == 0.0) {
     return 0.0;
   }
-  if (position >= 0.0) {
-    return spring_constant_ * position;
+  const double deflection = position - spring_zero_position_;
+  if (deflection >= 0.0) {
+    return spring_constant_ * deflection;
   }
-  return spring_constant_ * spring_compression_ratio_ * position;
+  return spring_constant_ * spring_compression_ratio_ * deflection;
 }
 
 double BrushedMotorModel::lvdt_measurement(double position) const {

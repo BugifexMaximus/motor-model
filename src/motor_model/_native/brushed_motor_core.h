@@ -58,6 +58,7 @@ class BrushedMotorModel {
                     double stop_speed_threshold = 1e-4,
                     double spring_constant = 9.5e-4,
                     double spring_compression_ratio = 0.4,
+                    double spring_zero_position = 0.0,
                     double lvdt_full_scale = 0.1,
                     double lvdt_noise_std = 5e-3,
                     int integration_substeps = 1,
@@ -77,6 +78,7 @@ class BrushedMotorModel {
   double stop_speed_threshold() const { return stop_speed_threshold_; }
   double spring_constant() const { return spring_constant_; }
   double spring_compression_ratio() const { return spring_compression_ratio_; }
+  double spring_zero_position() const { return spring_zero_position_; }
   double lvdt_full_scale() const { return lvdt_full_scale_; }
   double lvdt_noise_std() const { return lvdt_noise_std_; }
   double ke() const { return ke_; }
@@ -108,6 +110,7 @@ class BrushedMotorModel {
   double stop_speed_threshold_;
   double spring_constant_;
   double spring_compression_ratio_;
+  double spring_zero_position_;
   double lvdt_full_scale_;
   double lvdt_noise_std_;
   int integration_substeps_;

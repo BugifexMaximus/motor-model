@@ -33,6 +33,9 @@ motor_model::MotorParams MotorParamsFromPython(const py::object& motor_obj) {
     params.stop_speed_threshold = attr("stop_speed_threshold").cast<double>();
     params.spring_constant = attr("spring_constant").cast<double>();
     params.spring_compression_ratio = attr("spring_compression_ratio").cast<double>();
+    if (py::hasattr(motor_obj, "spring_zero_position")) {
+        params.spring_zero_position = attr("spring_zero_position").cast<double>();
+    }
     params.lvdt_full_scale = attr("lvdt_full_scale").cast<double>();
     params.integration_substeps = attr("integration_substeps").cast<int>();
 
@@ -119,6 +122,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
                         double stop_speed_threshold,
                         double spring_constant,
                         double spring_compression_ratio,
+                        double spring_zero_position,
                         double lvdt_full_scale,
                         int integration_substeps) {
                 double ke = kv > 0.0 ? 1.0 / kv : 0.0;
@@ -134,6 +138,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
                     stop_speed_threshold,
                     spring_constant,
                     spring_compression_ratio,
+                    spring_zero_position,
                     lvdt_full_scale,
                     ke,
                     kt,
@@ -150,6 +155,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
             py::arg("stop_speed_threshold") = 1e-4,
             py::arg("spring_constant") = 9.5e-4,
             py::arg("spring_compression_ratio") = 0.4,
+            py::arg("spring_zero_position") = 0.0,
             py::arg("lvdt_full_scale") = 0.1,
             py::arg("integration_substeps") = 1)
         .def_readwrite("resistance", &mm::MotorParams::resistance)
@@ -162,6 +168,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
         .def_readwrite("stop_speed_threshold", &mm::MotorParams::stop_speed_threshold)
         .def_readwrite("spring_constant", &mm::MotorParams::spring_constant)
         .def_readwrite("spring_compression_ratio", &mm::MotorParams::spring_compression_ratio)
+        .def_readwrite("spring_zero_position", &mm::MotorParams::spring_zero_position)
         .def_readwrite("lvdt_full_scale", &mm::MotorParams::lvdt_full_scale)
         .def_readwrite("ke", &mm::MotorParams::ke)
         .def_readwrite("kt", &mm::MotorParams::kt)
@@ -261,7 +268,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
             py::arg("pi_limit") = 5.0,
             py::arg("pi_gate_saturation") = true,
             py::arg("pi_gate_blocked") = true,
-            py::arg("pi_gate_error_band") = true,
+            py::arg("pi_gate_error_band") = false,
             py::arg("pi_leak_near_setpoint") = true,
             py::arg("use_model_integrator") = false,
             py::arg("opt_iters") = 10,
@@ -360,7 +367,7 @@ PYBIND11_MODULE(continuous_mpc, m) {
             py::arg("pi_limit") = 5.0,
             py::arg("pi_gate_saturation") = true,
             py::arg("pi_gate_blocked") = true,
-            py::arg("pi_gate_error_band") = true,
+            py::arg("pi_gate_error_band") = false,
             py::arg("pi_leak_near_setpoint") = true,
             py::arg("use_model_integrator") = false,
             py::arg("opt_iters") = 10,

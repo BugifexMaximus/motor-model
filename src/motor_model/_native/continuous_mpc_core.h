@@ -24,6 +24,7 @@ struct MotorParams {
     double stop_speed_threshold{1e-4};
     double spring_constant{9.5e-4};
     double spring_compression_ratio{0.4};
+    double spring_zero_position{0.0};
     double lvdt_full_scale{0.1};
     double ke{0.0};
     double kt{0.0};
@@ -41,6 +42,7 @@ struct MotorParams {
                 double stop_speed_threshold,
                 double spring_constant,
                 double spring_compression_ratio,
+                double spring_zero_position,
                 double lvdt_full_scale,
                 double ke,
                 double kt,
@@ -55,6 +57,7 @@ struct MotorParams {
           stop_speed_threshold(stop_speed_threshold),
           spring_constant(spring_constant),
           spring_compression_ratio(spring_compression_ratio),
+          spring_zero_position(spring_zero_position),
           lvdt_full_scale(lvdt_full_scale),
           ke(ke),
           kt(kt),
@@ -70,10 +73,11 @@ struct MotorParams {
         if (spring_constant == 0.0) {
             return 0.0;
         }
-        if (position >= 0.0) {
-            return spring_constant * position;
+        double deflection = position - spring_zero_position;
+        if (deflection >= 0.0) {
+            return spring_constant * deflection;
         }
-        return spring_constant * spring_compression_ratio * position;
+        return spring_constant * spring_compression_ratio * deflection;
     }
 
     static double Sign(double value) {
@@ -143,7 +147,7 @@ class ContMPCController {
         double pi_limit = 5.0,
         bool pi_gate_saturation = true,
         bool pi_gate_blocked = true,
-        bool pi_gate_error_band = true,
+        bool pi_gate_error_band = false,
         bool pi_leak_near_setpoint = true,
         bool use_model_integrator = false,
         int opt_iters = 10,

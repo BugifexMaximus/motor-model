@@ -2,6 +2,8 @@
 
 import random
 
+import pytest
+
 from motor_model import BrushedMotorModel
 
 
@@ -58,3 +60,14 @@ def test_lvdt_measurement_saturates_at_full_scale():
     assert result.lvdt[-1] == 1.0
     negative_result = model.simulate(-5.0, duration=5e-3, dt=1e-4)
     assert negative_result.lvdt[-1] == -1.0
+
+
+def test_spring_torque_uses_equilibrium_angle():
+    model = BrushedMotorModel(
+        spring_constant=1.0,
+        spring_compression_ratio=0.5,
+        spring_zero_position=0.1,
+    )
+
+    assert model._spring_torque(0.3) == pytest.approx(0.2)
+    assert model._spring_torque(0.0) == pytest.approx(-0.05)
