@@ -199,7 +199,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.voltage_line = None
         self.pi_integrator_line = None
         self.model_integrator_line = None
-        self.plan_line = None
+        self.plan_history_line = None
+        self.plan_future_line = None
 
         self._build_plot_area()
         self.canvas.mpl_connect("button_press_event", self._on_plot_clicked)
@@ -1118,13 +1119,17 @@ class ControllerDemo(QtWidgets.QMainWindow):
             self.plan_ax = self._axes[axis_index]
             self.plan_ax.set_ylabel("Planned V [V]")
             self.plan_ax.grid(True)
-            (self.plan_line,) = self.plan_ax.plot(
-                [], [], label="Planned voltage", color="#bcbd22", linestyle="--"
+            (self.plan_history_line,) = self.plan_ax.plot(
+                [], [], label="Voltage history", color="#bcbd22"
+            )
+            (self.plan_future_line,) = self.plan_ax.plot(
+                [], [], label="Voltage plan", color="#17becf", linestyle="--"
             )
             axis_index += 1
         else:
             self.plan_ax = None
-            self.plan_line = None
+            self.plan_history_line = None
+            self.plan_future_line = None
 
         self._axes[-1].set_xlabel("Time [s]")
         self.figure.tight_layout()
@@ -1461,12 +1466,14 @@ class ControllerDemo(QtWidgets.QMainWindow):
         currents = list(self.simulation.current_history)
         voltages = list(self.simulation.voltage_history)
 
-        plan_line_times: List[float] = []
-        plan_line_values: List[float] = []
+        plan_history_times: List[float] = []
+        plan_history_values: List[float] = []
+        plan_future_times: List[float] = []
+        plan_future_values: List[float] = []
         plan_end_time = times[-1]
-        if self.plan_line is not None and self.plan_ax is not None:
-            plan_line_times = list(times)
-            plan_line_values = list(voltages)
+        if self.plan_ax is not None and self.plan_history_line is not None:
+            plan_history_times = list(times)
+            plan_history_values = list(voltages)
             plan_sequence: Tuple[float, ...] = ()
             if self.simulation.planned_voltage_history:
                 plan_sequence = self.simulation.planned_voltage_history[-1]
@@ -1483,10 +1490,14 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 plan_future_times = [
                     times[-1] + dt_value * (index + 1) for index in range(len(plan_sequence))
                 ]
-                plan_line_times.extend(plan_future_times)
-                plan_line_values.extend(plan_sequence)
-            if plan_line_times:
-                plan_end_time = plan_line_times[-1]
+                plan_future_values = list(plan_sequence)
+                if plan_future_times and plan_history_times:
+                    plan_future_times.insert(0, plan_history_times[-1])
+                    plan_future_values.insert(0, plan_history_values[-1])
+            if plan_future_times:
+                plan_end_time = plan_future_times[-1]
+            elif plan_history_times:
+                plan_end_time = plan_history_times[-1]
 
         if self.position_line is not None:
             self.position_line.set_data(times, positions_deg)
@@ -1541,19 +1552,44 @@ class ControllerDemo(QtWidgets.QMainWindow):
             elif self.integrator_ax.legend_ is not None:
                 self.integrator_ax.legend_.remove()
 
-        if self.plan_ax is not None and self.plan_line is not None:
-            if plan_line_times:
-                self.plan_line.set_data(plan_line_times, plan_line_values)
-                self.plan_line.set_visible(True)
+        if self.plan_ax is not None and self.plan_history_line is not None:
+            plan_has_history = bool(plan_history_times)
+            plan_has_future = len(plan_future_times) >= 2
+
+            if plan_has_history:
+                self.plan_history_line.set_data(plan_history_times, plan_history_values)
+                self.plan_history_line.set_visible(True)
+            else:
+                self.plan_history_line.set_data([], [])
+                self.plan_history_line.set_visible(False)
+
+            if self.plan_future_line is not None:
+                if plan_has_future:
+                    self.plan_future_line.set_data(plan_future_times, plan_future_values)
+                    self.plan_future_line.set_visible(True)
+                else:
+                    self.plan_future_line.set_data([], [])
+                    self.plan_future_line.set_visible(False)
+
+            if plan_has_history or plan_has_future:
                 self.plan_ax.relim()
                 self.plan_ax.autoscale_view()
-                if self.plan_ax.legend_ is None:
-                    self.plan_ax.legend(loc="upper right")
-            else:
-                self.plan_line.set_data([], [])
-                self.plan_line.set_visible(False)
-                if self.plan_ax.legend_ is not None:
+
+                handles = []
+                labels = []
+                if plan_has_history:
+                    handles.append(self.plan_history_line)
+                    labels.append("Voltage history")
+                if plan_has_future and self.plan_future_line is not None:
+                    handles.append(self.plan_future_line)
+                    labels.append("Voltage plan")
+
+                if handles:
+                    self.plan_ax.legend(handles, labels, loc="upper right")
+                elif self.plan_ax.legend_ is not None:
                     self.plan_ax.legend_.remove()
+            elif self.plan_ax.legend_ is not None:
+                self.plan_ax.legend_.remove()
 
         self.canvas.draw_idle()
 
