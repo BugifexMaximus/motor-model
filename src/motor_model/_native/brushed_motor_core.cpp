@@ -163,6 +163,37 @@ SimulationResult BrushedMotorModel::simulate(VoltageSource voltage,
   result.voltage.reserve(static_cast<std::size_t>(steps) + 1);
   result.lvdt_time.reserve(static_cast<std::size_t>(steps) + 1);
   result.lvdt.reserve(static_cast<std::size_t>(steps) + 1);
+  result.pi_integrator.reserve(static_cast<std::size_t>(steps) + 1);
+  result.model_integrator.reserve(static_cast<std::size_t>(steps) + 1);
+  result.planned_voltage.reserve(static_cast<std::size_t>(steps) + 1);
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  ControllerDiagnostics last_diag;
+  bool have_diag = false;
+
+  auto update_diagnostics = [&](FeedbackController *ctrl) {
+    if (ctrl == nullptr) {
+      return;
+    }
+    std::optional<ControllerDiagnostics> diag = ctrl->diagnostics();
+    if (diag.has_value()) {
+      last_diag = std::move(*diag);
+      have_diag = true;
+    }
+  };
+
+  auto append_diagnostics = [&]() {
+    if (!have_diag) {
+      result.pi_integrator.push_back(nan);
+      result.model_integrator.push_back(nan);
+      result.planned_voltage.emplace_back();
+      return;
+    }
+
+    result.pi_integrator.push_back(last_diag.pi_integrator.value_or(nan));
+    result.model_integrator.push_back(last_diag.model_integrator.value_or(nan));
+    result.planned_voltage.push_back(last_diag.planned_voltage);
+  };
 
   double current = initial_current;
   double speed = initial_speed;
@@ -174,6 +205,7 @@ SimulationResult BrushedMotorModel::simulate(VoltageSource voltage,
   if (controller != nullptr) {
     controller->reset(initial_measurement, current, speed);
     voltage_command = controller->update(0.0, initial_measurement);
+    update_diagnostics(controller);
   } else {
     voltage_command = voltage(0.0);
   }
@@ -186,6 +218,7 @@ SimulationResult BrushedMotorModel::simulate(VoltageSource voltage,
   result.voltage.push_back(voltage_command);
   result.lvdt_time.push_back(0.0);
   result.lvdt.push_back(initial_measurement);
+  append_diagnostics();
 
   for (int step = 0; step < steps; ++step) {
     const double t = step * dt;
@@ -231,8 +264,11 @@ SimulationResult BrushedMotorModel::simulate(VoltageSource voltage,
 
       if (controller != nullptr && (step + 1) % controller_steps == 0) {
         voltage_command = controller->update(measurement_time, measurement);
+        update_diagnostics(controller);
       }
     }
+
+    append_diagnostics();
 
     if (controller == nullptr) {
       voltage_command = voltage(next_time);

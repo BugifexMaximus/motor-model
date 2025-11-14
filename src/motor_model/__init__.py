@@ -18,6 +18,7 @@ from .mpc_simulation import (
     build_default_tube_controller_kwargs,
     build_default_motor_kwargs,
 )
+from .plotting import plot_simulation
 
 __all__ = [
     "BrushedMotorModel",
@@ -35,4 +36,5 @@ __all__ = [
     "build_default_continuous_controller_kwargs",
     "build_default_tube_controller_kwargs",
     "build_default_motor_kwargs",
+    "plot_simulation",
 ]

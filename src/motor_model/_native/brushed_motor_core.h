@@ -16,6 +16,12 @@ constexpr double rad_per_sec_per_volt_to_rpm_per_volt_factor =
 double rpm_per_volt_to_rad_per_sec_per_volt(double value);
 double rad_per_sec_per_volt_to_rpm_per_volt(double value);
 
+struct ControllerDiagnostics {
+  std::optional<double> pi_integrator;
+  std::optional<double> model_integrator;
+  std::vector<double> planned_voltage;
+};
+
 struct SimulationResult {
   std::vector<double> time;
   std::vector<double> current;
@@ -25,6 +31,9 @@ struct SimulationResult {
   std::vector<double> voltage;
   std::vector<double> lvdt_time;
   std::vector<double> lvdt;
+  std::vector<double> pi_integrator;
+  std::vector<double> model_integrator;
+  std::vector<std::vector<double>> planned_voltage;
 };
 
 class FeedbackController {
@@ -32,6 +41,7 @@ class FeedbackController {
   virtual ~FeedbackController() = default;
   virtual void reset(double initial_measurement, double initial_current, double initial_speed) = 0;
   virtual double update(double time, double measurement) = 0;
+  virtual std::optional<ControllerDiagnostics> diagnostics() const { return std::nullopt; }
 };
 
 using VoltageSource = std::function<double(double)>;

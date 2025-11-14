@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import sys
 from dataclasses import dataclass
-from typing import Dict, cast
+from typing import Dict, List, Tuple, cast
 
 from PyQt5 import QtCore, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -173,17 +173,40 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         self.figure = Figure(figsize=(6, 4))
         self.canvas = FigureCanvas(self.figure)
-        self.axes = self.figure.add_subplot(111)
-        self.axes.set_xlabel("Time [s]")
-        self.axes.set_ylabel("Position [deg]")
-        self.axes.grid(True)
         layout.addWidget(self.canvas, stretch=3)
 
-        self.position_line, = self.axes.plot([], [], label="Rotor position", color="#1f77b4")
-        self.setpoint_line, = self.axes.plot([], [], label="Setpoint", linestyle="--", color="#d62728")
-        self.axes.legend(loc="upper right")
+        self._show_lvdt = False
+        self._show_integrator = False
+        self._show_planned_voltage = False
+        self._show_speed = True
+        self._show_current = True
+        self._show_voltage = True
 
+        self._axes: List = []
+        self.position_ax = None
+        self.lvdt_ax = None
+        self.speed_ax = None
+        self.current_ax = None
+        self.voltage_ax = None
+        self.integrator_ax = None
+        self.plan_ax = None
+
+        self.position_line = None
+        self.setpoint_line = None
+        self.lvdt_line = None
+        self.speed_line = None
+        self.current_line = None
+        self.voltage_line = None
+        self.pi_integrator_line = None
+        self.model_integrator_line = None
+        self.plan_history_line = None
+        self.plan_future_line = None
+
+        self._build_plot_area()
         self.canvas.mpl_connect("button_press_event", self._on_plot_clicked)
+
+        self.plot_options_panel = self._create_plot_options_panel()
+        layout.addWidget(self.plot_options_panel, stretch=0)
 
         controls_scroll = QtWidgets.QScrollArea()
         controls_scroll.setWidgetResizable(True)
@@ -946,6 +969,182 @@ class ControllerDemo(QtWidgets.QMainWindow):
 
         return box
 
+    def _create_plot_options_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QWidget()
+        panel.setSizePolicy(
+            QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Preferred)
+        )
+
+        layout = QtWidgets.QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        live_box = QtWidgets.QGroupBox("Live signals")
+        live_layout = QtWidgets.QVBoxLayout(live_box)
+        self.show_speed_check = QtWidgets.QCheckBox("Speed")
+        self.show_speed_check.setChecked(self._show_speed)
+        self.show_speed_check.stateChanged.connect(self._on_plot_options_changed)
+        live_layout.addWidget(self.show_speed_check)
+
+        self.show_current_check = QtWidgets.QCheckBox("Current")
+        self.show_current_check.setChecked(self._show_current)
+        self.show_current_check.stateChanged.connect(self._on_plot_options_changed)
+        live_layout.addWidget(self.show_current_check)
+
+        self.show_voltage_check = QtWidgets.QCheckBox("Voltage")
+        self.show_voltage_check.setChecked(self._show_voltage)
+        self.show_voltage_check.stateChanged.connect(self._on_plot_options_changed)
+        live_layout.addWidget(self.show_voltage_check)
+
+        live_layout.addStretch(1)
+        layout.addWidget(live_box)
+
+        diagnostics_box = QtWidgets.QGroupBox("Diagnostics")
+        diagnostics_layout = QtWidgets.QVBoxLayout(diagnostics_box)
+
+        self.show_lvdt_check = QtWidgets.QCheckBox("LVDT samples")
+        self.show_lvdt_check.setChecked(self._show_lvdt)
+        self.show_lvdt_check.stateChanged.connect(self._on_plot_options_changed)
+        diagnostics_layout.addWidget(self.show_lvdt_check)
+
+        self.show_integrator_check = QtWidgets.QCheckBox("Integrator diagnostics")
+        self.show_integrator_check.setChecked(self._show_integrator)
+        self.show_integrator_check.stateChanged.connect(self._on_plot_options_changed)
+        diagnostics_layout.addWidget(self.show_integrator_check)
+
+        self.show_plan_check = QtWidgets.QCheckBox("Planned voltage path")
+        self.show_plan_check.setChecked(self._show_planned_voltage)
+        self.show_plan_check.stateChanged.connect(self._on_plot_options_changed)
+        diagnostics_layout.addWidget(self.show_plan_check)
+
+        diagnostics_layout.addStretch(1)
+        layout.addWidget(diagnostics_box)
+
+        layout.addStretch(1)
+        return panel
+
+    def _build_plot_area(self) -> None:
+        include_speed = self._show_speed
+        include_current = self._show_current
+        include_voltage = self._show_voltage
+        include_integrator = self._show_integrator
+        include_plan = self._show_planned_voltage
+
+        self.figure.clear()
+        axes_count = 1
+        axes_count += int(include_speed)
+        axes_count += int(include_current)
+        axes_count += int(include_voltage)
+        axes_count += int(include_integrator)
+        axes_count += int(include_plan)
+        axes_count = max(1, axes_count)
+        axes = self.figure.subplots(axes_count, 1, sharex=True)
+        try:
+            self._axes = list(axes)
+        except TypeError:
+            self._axes = [axes]
+
+        self.position_ax = self._axes[0]
+        self.position_ax.set_ylabel("Position [deg]")
+        self.position_ax.grid(True)
+        (self.position_line,) = self.position_ax.plot([], [], label="Rotor position", color="#1f77b4")
+        (self.setpoint_line,) = self.position_ax.plot(
+            [], [], label="Setpoint", linestyle="--", color="#d62728"
+        )
+
+        self.lvdt_ax = None
+        self.lvdt_line = None
+        if self._show_lvdt:
+            self.lvdt_ax = self.position_ax.twinx()
+            self.lvdt_ax.set_ylabel("LVDT (normalized)")
+            self.lvdt_ax.set_ylim(-1.05, 1.05)
+            self.lvdt_ax.grid(False)
+            (self.lvdt_line,) = self.lvdt_ax.plot(
+                [], [], label="LVDT", color="#9467bd", linestyle="--", marker="o", markersize=3
+            )
+            self.position_ax.legend(loc="upper left")
+            self.lvdt_ax.legend(loc="upper right")
+        else:
+            self.position_ax.legend(loc="upper right")
+
+        axis_index = 1
+
+        if include_speed and axis_index < len(self._axes):
+            self.speed_ax = self._axes[axis_index]
+            self.speed_ax.set_ylabel("Speed [deg/s]")
+            self.speed_ax.grid(True)
+            (self.speed_line,) = self.speed_ax.plot([], [], label="Speed", color="#ff7f0e")
+            axis_index += 1
+        else:
+            self.speed_ax = None
+            self.speed_line = None
+
+        if include_current and axis_index < len(self._axes):
+            self.current_ax = self._axes[axis_index]
+            self.current_ax.set_ylabel("Current [A]")
+            self.current_ax.grid(True)
+            (self.current_line,) = self.current_ax.plot([], [], label="Current", color="#2ca02c")
+            axis_index += 1
+        else:
+            self.current_ax = None
+            self.current_line = None
+
+        if include_voltage and axis_index < len(self._axes):
+            self.voltage_ax = self._axes[axis_index]
+            self.voltage_ax.set_ylabel("Voltage [V]")
+            self.voltage_ax.grid(True)
+            (self.voltage_line,) = self.voltage_ax.plot([], [], label="Voltage", color="#d62728")
+            axis_index += 1
+        else:
+            self.voltage_ax = None
+            self.voltage_line = None
+
+        if include_integrator:
+            self.integrator_ax = self._axes[axis_index]
+            self.integrator_ax.set_ylabel("Integrator [V]")
+            self.integrator_ax.grid(True)
+            (self.pi_integrator_line,) = self.integrator_ax.plot(
+                [], [], label="PI integrator", color="#17becf"
+            )
+            (self.model_integrator_line,) = self.integrator_ax.plot(
+                [], [], label="Model bias", color="#8c564b"
+            )
+            axis_index += 1
+        else:
+            self.integrator_ax = None
+            self.pi_integrator_line = None
+            self.model_integrator_line = None
+
+        if include_plan:
+            self.plan_ax = self._axes[axis_index]
+            self.plan_ax.set_ylabel("Planned V [V]")
+            self.plan_ax.grid(True)
+            (self.plan_history_line,) = self.plan_ax.plot(
+                [], [], label="Voltage history", color="#bcbd22"
+            )
+            (self.plan_future_line,) = self.plan_ax.plot(
+                [], [], label="Voltage plan", color="#17becf", linestyle="--"
+            )
+            axis_index += 1
+        else:
+            self.plan_ax = None
+            self.plan_history_line = None
+            self.plan_future_line = None
+
+        self._axes[-1].set_xlabel("Time [s]")
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+
+    def _on_plot_options_changed(self, _state: int) -> None:  # noqa: ARG002
+        self._show_speed = self.show_speed_check.isChecked()
+        self._show_current = self.show_current_check.isChecked()
+        self._show_voltage = self.show_voltage_check.isChecked()
+        self._show_lvdt = self.show_lvdt_check.isChecked()
+        self._show_integrator = self.show_integrator_check.isChecked()
+        self._show_planned_voltage = self.show_plan_check.isChecked()
+        self._build_plot_area()
+        self._update_plot()
+
     def _create_disturbance_section(self) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox("Disturbances")
         layout = QtWidgets.QVBoxLayout(box)
@@ -1225,13 +1424,23 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.simulation.set_target_position(math.radians(value))
 
     def _on_plot_clicked(self, event) -> None:  # type: ignore[override]
-        if event.inaxes != self.axes or not self.simulation:
+        if self.position_ax is None or not self.simulation:
+            return
+        # ``event.inaxes`` can refer to either the primary position axis or the
+        # secondary LVDT overlay axis.  Convert through the position axis
+        # transform so we always interpret the click in degrees.
+        if not self.position_ax.patch.contains_point((event.x, event.y)):
             return
         self._block_updates = True
         try:
-            if event.ydata is None:
+            if event.x is None or event.y is None:
                 return
-            self.target_spin.setValue(float(event.ydata))
+            _x_data, y_data = self.position_ax.transData.inverted().transform(
+                (event.x, event.y)
+            )
+            if math.isnan(y_data):
+                return
+            self.target_spin.setValue(float(y_data))
         finally:
             self._block_updates = False
         self._on_target_changed(self.target_spin.value())
@@ -1246,21 +1455,141 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self._update_status_labels()
 
     def _update_plot(self) -> None:
-        if not self.simulation:
+        if not self.simulation or not self._axes:
             return
         times = list(self.simulation.time_history)
         if not times:
             return
         positions_deg = [math.degrees(value) for value in self.simulation.position_history]
         setpoints_deg = [math.degrees(value) for value in self.simulation.setpoint_history]
+        speeds_deg = [math.degrees(value) for value in self.simulation.speed_history]
+        currents = list(self.simulation.current_history)
+        voltages = list(self.simulation.voltage_history)
 
-        self.position_line.set_data(times, positions_deg)
-        self.setpoint_line.set_data(times, setpoints_deg)
+        plan_history_times: List[float] = []
+        plan_history_values: List[float] = []
+        plan_future_times: List[float] = []
+        plan_future_values: List[float] = []
+        plan_end_time = times[-1]
+        if self.plan_ax is not None and self.plan_history_line is not None:
+            plan_history_times = list(times)
+            plan_history_values = list(voltages)
+            plan_sequence: Tuple[float, ...] = ()
+            if self.simulation.planned_voltage_history:
+                plan_sequence = self.simulation.planned_voltage_history[-1]
+            if plan_sequence:
+                controller = getattr(self.simulation, "controller", None)
+                dt = getattr(controller, "dt", None)
+                try:
+                    dt_value = float(dt)
+                except (TypeError, ValueError):
+                    dt_value = float(self.simulation.plant_dt)
+                if not math.isfinite(dt_value) or dt_value <= 0.0:
+                    dt_value = float(self.simulation.plant_dt)
 
-        t_max = max(10.0, times[-1])
+                plan_future_times = [
+                    times[-1] + dt_value * (index + 1) for index in range(len(plan_sequence))
+                ]
+                plan_future_values = list(plan_sequence)
+                if plan_future_times and plan_history_times:
+                    plan_future_times.insert(0, plan_history_times[-1])
+                    plan_future_values.insert(0, plan_history_values[-1])
+            if plan_future_times:
+                plan_end_time = plan_future_times[-1]
+            elif plan_history_times:
+                plan_end_time = plan_history_times[-1]
+
+        if self.position_line is not None:
+            self.position_line.set_data(times, positions_deg)
+        if self.setpoint_line is not None:
+            self.setpoint_line.set_data(times, setpoints_deg)
+
+        t_max = max(10.0, plan_end_time)
         t_min = t_max - self.simulation.history_duration
-        self.axes.set_xlim(t_min, t_max)
-        self.axes.set_ylim(-30.0, 30.0)
+        if self.position_ax is not None:
+            self.position_ax.set_xlim(t_min, t_max)
+            self.position_ax.set_ylim(-30.0, 30.0)
+
+        if self.lvdt_line is not None and self.lvdt_ax is not None:
+            lvdt_times = list(self.simulation.lvdt_time_history)
+            lvdt_values = list(self.simulation.lvdt_history)
+            self.lvdt_line.set_data(lvdt_times, lvdt_values)
+            self.lvdt_ax.set_ylim(-1.05, 1.05)
+
+        if self.speed_line is not None and self.speed_ax is not None:
+            self.speed_line.set_data(times, speeds_deg)
+            self.speed_ax.relim()
+            self.speed_ax.autoscale_view()
+
+        if self.current_line is not None and self.current_ax is not None:
+            self.current_line.set_data(times, currents)
+            self.current_ax.relim()
+            self.current_ax.autoscale_view()
+
+        if self.voltage_line is not None and self.voltage_ax is not None:
+            self.voltage_line.set_data(times, voltages)
+            self.voltage_ax.relim()
+            self.voltage_ax.autoscale_view()
+
+        if self.integrator_ax is not None and self.pi_integrator_line is not None:
+            pi_values = list(self.simulation.pi_integrator_history)
+            model_values = list(self.simulation.model_integrator_history)
+            self.pi_integrator_line.set_data(times, pi_values)
+            self.model_integrator_line.set_data(times, model_values)
+            self.integrator_ax.relim()
+            self.integrator_ax.autoscale_view()
+
+            handles = []
+            labels = []
+            if any(math.isfinite(value) for value in pi_values):
+                handles.append(self.pi_integrator_line)
+                labels.append("PI integrator")
+            if any(math.isfinite(value) for value in model_values):
+                handles.append(self.model_integrator_line)
+                labels.append("Model bias")
+            if handles:
+                self.integrator_ax.legend(handles, labels, loc="upper right")
+            elif self.integrator_ax.legend_ is not None:
+                self.integrator_ax.legend_.remove()
+
+        if self.plan_ax is not None and self.plan_history_line is not None:
+            plan_has_history = bool(plan_history_times)
+            plan_has_future = len(plan_future_times) >= 2
+
+            if plan_has_history:
+                self.plan_history_line.set_data(plan_history_times, plan_history_values)
+                self.plan_history_line.set_visible(True)
+            else:
+                self.plan_history_line.set_data([], [])
+                self.plan_history_line.set_visible(False)
+
+            if self.plan_future_line is not None:
+                if plan_has_future:
+                    self.plan_future_line.set_data(plan_future_times, plan_future_values)
+                    self.plan_future_line.set_visible(True)
+                else:
+                    self.plan_future_line.set_data([], [])
+                    self.plan_future_line.set_visible(False)
+
+            if plan_has_history or plan_has_future:
+                self.plan_ax.relim()
+                self.plan_ax.autoscale_view()
+
+                handles = []
+                labels = []
+                if plan_has_history:
+                    handles.append(self.plan_history_line)
+                    labels.append("Voltage history")
+                if plan_has_future and self.plan_future_line is not None:
+                    handles.append(self.plan_future_line)
+                    labels.append("Voltage plan")
+
+                if handles:
+                    self.plan_ax.legend(handles, labels, loc="upper right")
+                elif self.plan_ax.legend_ is not None:
+                    self.plan_ax.legend_.remove()
+            elif self.plan_ax.legend_ is not None:
+                self.plan_ax.legend_.remove()
 
         self.canvas.draw_idle()
 
