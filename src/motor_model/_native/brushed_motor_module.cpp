@@ -12,6 +12,7 @@
 namespace py = pybind11;
 using namespace py::literals;
 using motor_model::native::BrushedMotorModel;
+using motor_model::native::ControllerDiagnostics;
 using motor_model::native::FeedbackController;
 using motor_model::native::SimulationResult;
 using motor_model::native::VoltageSource;
@@ -75,6 +76,36 @@ class PyFeedbackController : public FeedbackController {
     return result.cast<double>();
   }
 
+  std::optional<ControllerDiagnostics> diagnostics() const override {
+    py::gil_scoped_acquire gil;
+
+    ControllerDiagnostics diagnostics;
+    bool has_value = false;
+
+    if (py::hasattr(controller_, "_int_err")) {
+      diagnostics.pi_integrator = controller_.attr("_int_err").cast<double>();
+      has_value = true;
+    }
+
+    if (py::hasattr(controller_, "_u_bias")) {
+      diagnostics.model_integrator = controller_.attr("_u_bias").cast<double>();
+      has_value = true;
+    }
+
+    if (py::hasattr(controller_, "_u_seq")) {
+      diagnostics.planned_voltage = controller_.attr("_u_seq").cast<std::vector<double>>();
+      if (!diagnostics.planned_voltage.empty()) {
+        has_value = true;
+      }
+    }
+
+    if (!has_value) {
+      return std::nullopt;
+    }
+
+    return diagnostics;
+  }
+
  private:
   py::object controller_;
 };
@@ -107,7 +138,10 @@ PYBIND11_MODULE(brushed_motor, m) {
       .def_readonly("torque", &SimulationResult::torque)
       .def_readonly("voltage", &SimulationResult::voltage)
       .def_readonly("lvdt_time", &SimulationResult::lvdt_time)
-      .def_readonly("lvdt", &SimulationResult::lvdt);
+      .def_readonly("lvdt", &SimulationResult::lvdt)
+      .def_readonly("pi_integrator", &SimulationResult::pi_integrator)
+      .def_readonly("model_integrator", &SimulationResult::model_integrator)
+      .def_readonly("planned_voltage", &SimulationResult::planned_voltage);
 
   py::class_<BrushedMotorModel>(m, "BrushedMotorModel")
       .def(py::init<double, double, double, double, double, double, double, double, double, double, double, double, int, std::optional<std::uint32_t>>(),

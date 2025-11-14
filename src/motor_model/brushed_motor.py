@@ -62,6 +62,9 @@ class SimulationResult:
     voltage: List[float]
     lvdt_time: List[float]
     lvdt: List[float]
+    pi_integrator: List[float] | None = None
+    model_integrator: List[float] | None = None
+    planned_voltage: List[List[float]] | None = None
 
 
 class BrushedMotorModel:
