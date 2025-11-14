@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import sys
 from dataclasses import dataclass
-from typing import Dict, List, cast
+from typing import Dict, List, Tuple, cast
 
 from PyQt5 import QtCore, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -1460,13 +1460,14 @@ class ControllerDemo(QtWidgets.QMainWindow):
         speeds_deg = [math.degrees(value) for value in self.simulation.speed_history]
         currents = list(self.simulation.current_history)
         voltages = list(self.simulation.voltage_history)
-        latest_voltage = voltages[-1] if voltages else math.nan
 
-        planned_future: List[float] = []
-        plan_times: List[float] = []
+        plan_line_times: List[float] = []
+        plan_line_values: List[float] = []
         plan_end_time = times[-1]
         if self.plan_line is not None and self.plan_ax is not None:
-            plan_sequence = ()
+            plan_line_times = list(times)
+            plan_line_values = list(voltages)
+            plan_sequence: Tuple[float, ...] = ()
             if self.simulation.planned_voltage_history:
                 plan_sequence = self.simulation.planned_voltage_history[-1]
             if plan_sequence:
@@ -1479,12 +1480,13 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 if not math.isfinite(dt_value) or dt_value <= 0.0:
                     dt_value = float(self.simulation.plant_dt)
 
-                plan_times = [times[-1] + dt_value * (index + 1) for index in range(len(plan_sequence))]
-                planned_future = list(plan_sequence)
-                if math.isfinite(latest_voltage):
-                    plan_times.insert(0, times[-1])
-                    planned_future.insert(0, latest_voltage)
-                plan_end_time = plan_times[-1]
+                plan_future_times = [
+                    times[-1] + dt_value * (index + 1) for index in range(len(plan_sequence))
+                ]
+                plan_line_times.extend(plan_future_times)
+                plan_line_values.extend(plan_sequence)
+            if plan_line_times:
+                plan_end_time = plan_line_times[-1]
 
         if self.position_line is not None:
             self.position_line.set_data(times, positions_deg)
@@ -1540,8 +1542,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
                 self.integrator_ax.legend_.remove()
 
         if self.plan_ax is not None and self.plan_line is not None:
-            if plan_times and planned_future:
-                self.plan_line.set_data(plan_times, planned_future)
+            if plan_line_times:
+                self.plan_line.set_data(plan_line_times, plan_line_values)
                 self.plan_line.set_visible(True)
                 self.plan_ax.relim()
                 self.plan_ax.autoscale_view()
