@@ -176,8 +176,8 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas, stretch=3)
 
-        self._show_lvdt = True
-        self._show_integrator = True
+        self._show_lvdt = False
+        self._show_integrator = False
         self._show_planned_voltage = False
 
         self._axes: List = []
@@ -1357,13 +1357,23 @@ class ControllerDemo(QtWidgets.QMainWindow):
         self.simulation.set_target_position(math.radians(value))
 
     def _on_plot_clicked(self, event) -> None:  # type: ignore[override]
-        if self.position_ax is None or event.inaxes != self.position_ax or not self.simulation:
+        if self.position_ax is None or not self.simulation:
+            return
+        # ``event.inaxes`` can refer to either the primary position axis or the
+        # secondary LVDT overlay axis.  Convert through the position axis
+        # transform so we always interpret the click in degrees.
+        if not self.position_ax.patch.contains_point((event.x, event.y)):
             return
         self._block_updates = True
         try:
-            if event.ydata is None:
+            if event.x is None or event.y is None:
                 return
-            self.target_spin.setValue(float(event.ydata))
+            _x_data, y_data = self.position_ax.transData.inverted().transform(
+                (event.x, event.y)
+            )
+            if math.isnan(y_data):
+                return
+            self.target_spin.setValue(float(y_data))
         finally:
             self._block_updates = False
         self._on_target_changed(self.target_spin.value())
